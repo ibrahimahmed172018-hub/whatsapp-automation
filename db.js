@@ -5,8 +5,17 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const dbPath = process.env.DB_PATH || 'delivery.db';
-const db = new sqlite3.Database(dbPath);
+let db = null;
+const isVercel = Boolean(process.env.VERCEL);
+
+if (!isVercel) {
+  try {
+    const dbPath = process.env.DB_PATH || 'delivery.db';
+    db = new sqlite3.Database(dbPath);
+  } catch (err) {
+    console.warn('⚠️ تعذر تشغيل SQLite محلياً، سيتم الاعتماد على Supabase فقط:', err.message);
+  }
+}
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
@@ -32,6 +41,7 @@ export const CustomerState = Object.freeze({
 
 // دوال مساعدة للتعامل مع SQLite بأسلوب Promises / Async-Await
 export const run = (sql, params = []) => {
+  if (!db) return Promise.resolve({ lastID: 0, changes: 0 });
   return new Promise((resolve, reject) => {
     db.run(sql, params, function (err) {
       if (err) return reject(err);
@@ -51,6 +61,7 @@ export const get = async (sql, params = []) => {
       if (data) return data;
     }
   }
+  if (!db) return undefined;
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => {
       if (err) return reject(err);
@@ -60,6 +71,7 @@ export const get = async (sql, params = []) => {
 };
 
 export const all = (sql, params = []) => {
+  if (!db) return Promise.resolve([]);
   return new Promise((resolve, reject) => {
     db.all(sql, params, (err, rows) => {
       if (err) return reject(err);
@@ -70,40 +82,46 @@ export const all = (sql, params = []) => {
 
 // إنشاء الجداول وتهيئة قاعدة البيانات
 export const initDB = async () => {
-  // 1. تهيئة جداول SQLite المحلية دائماً كنسخة احتياطية
-  await run(`
-    CREATE TABLE IF NOT EXISTS users (
-      phone TEXT PRIMARY KEY,
-      state TEXT NOT NULL DEFAULT 'IDLE',
-      last_interaction DATETIME DEFAULT CURRENT_TIMESTAMP,
-      current_order_data TEXT DEFAULT '{}'
-    )
-  `);
+  // 1. تهيئة جداول SQLite المحلية إذا كان السيرفر يدعم كتابة الملفات
+  if (db) {
+    try {
+      await run(`
+        CREATE TABLE IF NOT EXISTS users (
+          phone TEXT PRIMARY KEY,
+          state TEXT NOT NULL DEFAULT 'IDLE',
+          last_interaction DATETIME DEFAULT CURRENT_TIMESTAMP,
+          current_order_data TEXT DEFAULT '{}'
+        )
+      `);
 
-  await run(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      phone TEXT NOT NULL,
-      category TEXT,
-      details TEXT,
-      pickup_location TEXT,
-      delivery_location TEXT,
-      status TEXT DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+      await run(`
+        CREATE TABLE IF NOT EXISTS orders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          phone TEXT NOT NULL,
+          category TEXT,
+          details TEXT,
+          pickup_location TEXT,
+          delivery_location TEXT,
+          status TEXT DEFAULT 'pending',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
 
-  await run(`
-    CREATE TABLE IF NOT EXISTS restaurants (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      area TEXT DEFAULT 'طنطا',
-      menu_text TEXT,
-      image_url TEXT,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+      await run(`
+        CREATE TABLE IF NOT EXISTS restaurants (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          area TEXT DEFAULT 'طنطا',
+          menu_text TEXT,
+          image_url TEXT,
+          is_active INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+    } catch (err) {
+      console.warn('⚠️ تعذر إنشاء جداول SQLite:', err.message);
+    }
+  }
 
   if (isSupabaseEnabled) {
     try {

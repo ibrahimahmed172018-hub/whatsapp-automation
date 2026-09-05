@@ -40,13 +40,58 @@ let pairingCode = null;
 
 // نقاط فحص السيرفر
 app.get('/', (req, res) => {
-  res.json({
-    service: 'بوت دليفري طنطا - WhatsApp Bot',
-    status: botStatus,
-    sessionFolder: SESSION_DIR,
-    qrPage: `http://localhost:${PORT}/qr`,
-    timestamp: new Date().toISOString()
-  });
+  if (req.headers.accept && req.headers.accept.includes('application/json') && !req.headers.accept.includes('text/html')) {
+    return res.json({
+      service: 'بوت دليفري طنطا - WhatsApp Bot',
+      status: botStatus,
+      isVercel: Boolean(process.env.VERCEL),
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  const isVercel = Boolean(process.env.VERCEL);
+  res.send(`
+    <!DOCTYPE html>
+    <html dir="rtl" lang="ar">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>بوت دليفري طنطا</title>
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background: #f0f2f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+        .card { background: white; max-width: 550px; width: 100%; padding: 32px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; }
+        h1 { color: #075e54; margin-top: 0; font-size: 24px; }
+        .btn { display: inline-block; background: #128c7e; color: white; text-decoration: none; padding: 12px 22px; border-radius: 8px; font-weight: bold; margin: 8px 4px; font-size: 15px; transition: 0.2s; }
+        .btn:hover { background: #075e54; }
+        .badge { background: #dcfce7; color: #166534; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: inline-block; }
+        .notice { background: #fef3c7; color: #92400e; padding: 16px; border-radius: 10px; text-align: right; font-size: 14px; margin-top: 24px; border-right: 4px solid #f59e0b; line-height: 1.7; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>🛵 بوت دليفري طنطا</h1>
+        <p><span class="badge">🟢 السيرفر يعمل بنجاح (Online)</span></p>
+        <p style="color: #666; font-size: 15px;">الخادم ولوحة التحكم متصلة مباشرة بقاعدة بيانات Supabase السحابية.</p>
+
+        <div style="margin: 25px 0;">
+          <a href="/admin" class="btn">🍔 فتح لوحة تحكم المطاعم</a>
+          <a href="/api/restaurants" class="btn" style="background: #2563eb;">📊 بيانات المطاعم (API)</a>
+        </div>
+
+        ${isVercel ? `
+          <div class="notice">
+            <strong>📌 تنبيه بيئة Vercel:</strong><br>
+            لوحة التحكم وقاعدة بيانات Supabase تعملان هنا بكفاءة 100%. أما اتصال واتساب الدائم (24/7) فيتطلب تشغيل خادم دائم (مثل Render.com أو VPS) لأن Vercel هي بيئة Serverless مؤقتة لا تسمح بالاتصال المستمر.
+          </div>
+        ` : `
+          <div style="margin-top: 15px;">
+            <a href="/qr" style="color: #075e54; font-size: 14px; font-weight: 500;">📱 صفحة مسح رمز QR لواتساب</a>
+          </div>
+        `}
+      </div>
+    </body>
+    </html>
+  `);
 });
 
 app.get('/health', (req, res) => {
@@ -918,26 +963,34 @@ async function startWhatsAppBot() {
   }
 }
 
-const server = app.listen(PORT, async () => {
-  console.log(`🌐 خادم Express يعمل على: http://localhost:${PORT}`);
-  console.log(`📱 رابط صفحة الـ QR بالمتصفح: http://localhost:${PORT}/qr`);
-  console.log(`🍔 رابط لوحة تحكم المطاعم: http://localhost:${PORT}/admin`);
-  await initDB();
-  await startWhatsAppBot();
-});
-
-// إنهاء السيرفر والاتصال بأمان عند الإيقاف (Graceful Shutdown)
-const shutdown = async (signal) => {
-  console.log(`\n🛑 تم استلام إشارة (${signal})، جاري إغلاق الخادم والاتصال بواتساب بأمان...`);
-  server.close(() => {
-    console.log('✅ تم إغلاق خادم Express.');
+if (!process.env.VERCEL) {
+  const server = app.listen(PORT, async () => {
+    console.log(`🌐 خادم Express يعمل على: http://localhost:${PORT}`);
+    console.log(`📱 رابط صفحة الـ QR بالمتصفح: http://localhost:${PORT}/qr`);
+    console.log(`🍔 رابط لوحة تحكم المطاعم: http://localhost:${PORT}/admin`);
+    await initDB();
+    await startWhatsAppBot();
   });
-  if (sock) {
-    try { sock.end(); } catch {}
-  }
-  process.exit(0);
-};
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // إنهاء السيرفر والاتصال بأمان عند الإيقاف (Graceful Shutdown)
+  const shutdown = async (signal) => {
+    console.log(`\n🛑 تم استلام إشارة (${signal})، جاري إغلاق الخادم والاتصال بواتساب بأمان...`);
+    server.close(() => {
+      console.log('✅ تم إغلاق خادم Express.');
+    });
+    if (sock) {
+      try { sock.end(); } catch {}
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+} else {
+  // تهيئة قاعدة البيانات في بيئة Vercel Serverless
+  initDB().catch(console.error);
+}
+
+export default app;
+
 
