@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  tanta-delivery-bot:
+    build: .
+    container_name: tanta-delivery-bot
+    restart: always
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    volumes:
+      # الاحتفاظ بجلسة واتساب بشكل دائم على السيرفر حتى لا تفقد الاتصال عند إعادة التشغيل
+      - ./auth_info:/app/auth_info
+      - ./uploads:/app/uploads
+      - ./delivery.db:/app/delivery.db
