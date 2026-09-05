@@ -963,27 +963,45 @@ async function startWhatsAppBot() {
           console.log('❌ تم تسجيل الخروج من واتساب. يرجى حذف مجلد auth_info وإعادة التشغيل.');
         }
       } else if (connection === 'open') {
-        currentQr = null;
-        pairingCode = null;
-        botStatus = 'connected';
-        console.log('\n' + '='.repeat(55));
-        console.log('🚀 تم الاتصال بنجاح بواتساب!');
-        console.log('🛵 بوت دليفري طنطا جاهز الآن لاستقبال الرسائل والطلبات.');
-        console.log('='.repeat(55) + '\n');
+        const isRegistered = Boolean(state.creds.registered);
+        if (isRegistered) {
+          currentQr = null;
+          pairingCode = null;
+          botStatus = 'connected';
+          const botNum = state.creds.me?.id?.split(':')[0] || 'غير معروف';
+          console.log('\n' + '='.repeat(55));
+          console.log('🚀 تم الاتصال بنجاح بواتساب والحساب مسجل 100%!');
+          console.log(`📱 رقم البوت النشط الآن: +${botNum}`);
+          console.log('🛵 بوت دليفري طنطا جاهز الآن لاستقبال الرسائل والطلبات.');
+          console.log('='.repeat(55) + '\n');
+        } else {
+          botStatus = 'waiting_for_qr_scan';
+          console.log('\n⚠️ تم فتح الاتصال ولكن الجهاز غير مسجل (registered: false)، في انتظار مسح الـ QR أو كود الربط...');
+        }
       }
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      console.log(`\n📥 [استلام حدث رسائل من واتساب]: نوع الحدث = ${type}, عدد الرسائل = ${messages?.length || 0}`);
       if (type !== 'notify') return;
 
-      for (const msg of messages) {
-        if (msg.key.fromMe) continue;
+      const myNumber = state.creds.me?.id?.split(':')[0] || '';
 
+      for (const msg of messages) {
         const remoteJid = msg.key.remoteJid;
         if (!remoteJid) continue;
 
         const isGroup = remoteJid.endsWith('@g.us');
         const customerNumber = remoteJid.replace('@s.whatsapp.net', '').replace('@g.us', '');
+
+        // إذا كانت الرسالة مرسلة من نفس الرقم في شات شخص آخر، نتجاهلها
+        // لكن لو أرسلها لنفسه (Message Yourself / Note to Self)، نسمح له بتجربة البوت!
+        const isFromMe = Boolean(msg.key.fromMe);
+        const isNoteToSelf = isFromMe && myNumber && customerNumber.includes(myNumber);
+
+        if (isFromMe && !isNoteToSelf) {
+          continue;
+        }
 
         const text =
           msg.message?.conversation ||
@@ -997,7 +1015,7 @@ async function startWhatsAppBot() {
         const user = await getUserState(customerNumber);
 
         console.log('\n' + '─'.repeat(45));
-        console.log(`📩 رسالة جديدة من: ${isGroup ? 'مجموعة' : 'عميل'}`);
+        console.log(`📩 رسالة جديدة من: ${isGroup ? 'مجموعة' : (isNoteToSelf ? 'تجربة ذاتية (نفس الرقم)' : 'عميل')}`);
         console.log(`📞 رقم العميل: +${customerNumber} | الحالة الحالية: [${user.state}]`);
         console.log(`💬 نص الرسالة: "${text}"`);
         console.log(`🕒 التوقيت: ${new Date().toLocaleTimeString('ar-EG')}`);

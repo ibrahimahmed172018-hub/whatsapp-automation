@@ -138,8 +138,6 @@ export const initDB = async () => {
   } else {
     console.log(`📦 تم تهيئة قاعدة بيانات SQLite المحلية (${DB_PATH})`);
   }
-
-  await seedDefaultRestaurants();
 };
 
 // إدارة المطاعم والمينيوهات
@@ -293,54 +291,9 @@ export const deleteRestaurant = async (id) => {
   return run(`DELETE FROM restaurants WHERE id = ?`, [id]);
 };
 
-// بذر مطاعم طنطا الشهيرة كبداية في حال كان الجدول فارغاً
+// تم إيقاف إضافة المطاعم التجريبية تلقائياً
 export const seedDefaultRestaurants = async () => {
-  let count = 0;
-  if (isSupabaseEnabled) {
-    try {
-      const { count: sbCount, error } = await supabase.from('restaurants').select('*', { count: 'exact', head: true });
-      if (!error && typeof sbCount === 'number') {
-        count = sbCount;
-      }
-    } catch {}
-  } else {
-    const countRow = await get(`SELECT COUNT(*) as count FROM restaurants`);
-    count = countRow?.count || 0;
-  }
-
-  if (count === 0) {
-    const defaults = [
-      {
-        name: 'مطعم كرم الشام',
-        area: 'الاستاد - طنطا',
-        menu_text: '🌯 شاورما عربي دجاج: 85 ج | شاورما لحمة: 105 ج | وجبة ميكس كرم: 160 ج | بطاطس وبطاطس بالجبنة: 45 ج',
-        image_url: 'https://images.unsplash.com/photo-1529006557810-274b9b2fc783?w=600'
-      },
-      {
-        name: 'كريب زون (Crepe Zone)',
-        area: 'شارع سعيد - طنطا',
-        menu_text: '🥞 كريب زنجر سبايسي: 75 ج | كريب فاهيتا لحمة: 90 ج | كريب ميكس جبن: 60 ج | كريب نوتيلا أوريو: 65 ج',
-        image_url: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=600'
-      },
-      {
-        name: 'عنتر الكبابجي',
-        area: 'المحطة - شارع البحر',
-        menu_text: '🥩 كيلو كباب وكفتة مشكل: 520 ج | ربع كفتة مشوية: 130 ج | حواوشي بلدي مخصوص: 55 ج | طاجن لحمة بالبصل: 160 ج',
-        image_url: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=600'
-      },
-      {
-        name: 'كشري الباشا',
-        area: 'شارع النحاس - طنطا',
-        menu_text: '🍲 طبق كشري وسط: 35 ج | طبق كشري كبير: 45 ج | طاجن مكرونة باللحمة المفرومة: 50 ج | أرز باللبن مكسرات: 25 ج',
-        image_url: 'https://images.unsplash.com/photo-1585937421612-70a008356fbe?w=600'
-      }
-    ];
-
-    for (const r of defaults) {
-      await addRestaurant(r);
-    }
-    console.log('🍔 تم بذر المطاعم الافتراضية لطنطا في قاعدة البيانات بنجاح.');
-  }
+  return;
 };
 
 // الدوال المساعدة لإدارة الحالات والطلبات
