@@ -1,4 +1,3 @@
-import sqlite3 from 'sqlite3';
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
 import dotenv from 'dotenv';
@@ -7,18 +6,20 @@ dotenv.config();
 
 let db = null;
 const isVercel = Boolean(process.env.VERCEL);
+const DB_PATH = process.env.DB_PATH || 'delivery.db';
 
 if (!isVercel) {
   try {
-    const dbPath = process.env.DB_PATH || 'delivery.db';
-    db = new sqlite3.Database(dbPath);
+    const sqliteModule = await import('sqlite3');
+    const sqlite3 = sqliteModule.default || sqliteModule;
+    db = new sqlite3.Database(DB_PATH);
   } catch (err) {
-    console.warn('⚠️ تعذر تشغيل SQLite محلياً، سيتم الاعتماد على Supabase فقط:', err.message);
+    console.warn('⚠️ تعذر تشغيل SQLite محلياً، سيتم الاعتماد على Supabase فقط:', err?.message || err);
   }
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://pfuwluefmaetpcpjkjbd.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBmdXdsdWVmbWFldHBjcGpramJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxMTQwNzgsImV4cCI6MjA5OTY5MDA3OH0.GbLGNT4mlHJpGN2pNl1pi90wOeC82fVXQ_U4199Pd3s';
 
 export const isSupabaseEnabled = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
@@ -135,7 +136,7 @@ export const initDB = async () => {
       console.error('⚠️ خطأ اتصال Supabase:', err.message);
     }
   } else {
-    console.log(`📦 تم تهيئة قاعدة بيانات SQLite المحلية (${dbPath})`);
+    console.log(`📦 تم تهيئة قاعدة بيانات SQLite المحلية (${DB_PATH})`);
   }
 
   await seedDefaultRestaurants();

@@ -1,14 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import pino from 'pino';
-import qrcodeTerminal from 'qrcode-terminal';
 import QRCode from 'qrcode';
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  Browsers
-} from '@whiskeysockets/baileys';
 import {
   initDB,
   getUserState,
@@ -19,7 +11,6 @@ import {
   toggleRestaurantActive,
   deleteRestaurant
 } from './db.js';
-import { handleCustomerMessage } from './botHandler.js';
 
 dotenv.config();
 
@@ -31,6 +22,15 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));
+
+// توافق مع توجيهات Vercel Serverless
+app.use((req, res, next) => {
+  const original = req.headers['x-matched-path'] || req.headers['x-invoke-path'];
+  if (original && (req.url === '/api/index.js' || req.url === '/api/index' || req.url === '/api')) {
+    req.url = original;
+  }
+  next();
+});
 
 // متغيرات لتتبع حالة البوت والـ QR
 let sock = null;
@@ -832,7 +832,19 @@ app.delete('/api/restaurants/:id', async (req, res) => {
 
 // تشغيل وإدارة عميل Baileys
 async function startWhatsAppBot() {
+  if (process.env.VERCEL) return;
   try {
+    const {
+      default: makeWASocket,
+      useMultiFileAuthState,
+      DisconnectReason,
+      fetchLatestBaileysVersion,
+      Browsers
+    } = await import('@whiskeysockets/baileys');
+    const { default: pino } = await import('pino');
+    const { default: qrcodeTerminal } = await import('qrcode-terminal');
+    const { handleCustomerMessage } = await import('./botHandler.js');
+
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
