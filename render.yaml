@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: tanta-whatsapp-bot
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: SESSION_DIR
+        value: auth_info
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: ADMIN_PHONE
+        sync: false
+      - key: DRIVERS_GROUP_JID
+        sync: false
