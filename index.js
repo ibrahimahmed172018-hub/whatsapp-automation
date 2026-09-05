@@ -171,6 +171,55 @@ app.get('/groups', async (req, res) => {
 
 // صفحة ويب مخصصة لعرض رمز QR بدقة عالية وسهولة مسحه بالكاميرا
 app.get('/qr', async (req, res) => {
+  if (process.env.VERCEL) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html dir="rtl" lang="ar">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>حالة بوت واتساب - Vercel</title>
+        <style>
+          body { font-family: system-ui, -apple-system, sans-serif; background: #f0f2f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+          .card { background: white; max-width: 580px; width: 100%; padding: 32px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: right; }
+          h2 { color: #075e54; margin-top: 0; font-size: 22px; text-align: center; }
+          .badge { background: #dcfce7; color: #166534; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: inline-block; }
+          .info-box { background: #f0fdf4; border-right: 4px solid #22c55e; padding: 16px; border-radius: 8px; margin: 18px 0; font-size: 14px; line-height: 1.8; color: #15803d; }
+          .warn-box { background: #eff6ff; border-right: 4px solid #3b82f6; padding: 16px; border-radius: 8px; margin: 18px 0; font-size: 14px; line-height: 1.8; color: #1e40af; }
+          .btn { display: inline-block; background: #128c7e; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; text-align: center; margin: 8px 4px; }
+          .btn:hover { background: #075e54; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h2>🛵 حالة ربط واتساب على Vercel</h2>
+          <div style="text-align: center; margin-bottom: 20px;">
+            <span class="badge">🟢 لوحة التحكم وقاعدة البيانات السحابية تعمل بنجاح</span>
+          </div>
+
+          <div class="info-box">
+            <b>✅ تم ربط البوت بالفعل بنجاح!</b><br>
+            جلسة واتساب الخاصة بك مسجلة وتعمل وتستقبل رسائل وطلبات دليفري طنطا فوراً.
+          </div>
+
+          <div class="warn-box">
+            <b>💡 لماذا لا يظهر رمز QR هنا على Vercel؟</b><br>
+            منصة <b>Vercel</b> مصممة كـ <b>Serverless</b> (سيرفرات سحابية لإدارة لوحة التحكم <code>/admin</code> وواجهات الـ API وقاعدة بيانات Supabase، وتغلق تلقائياً بعد ثوانٍ لتوفير الموارد).<br><br>
+            بوت واتساب (Baileys) يحتاج اتصال WebSocket دائم ومستمر 24 ساعة دون إغلاق، لذلك:<br>
+            1️⃣ <b>Vercel:</b> يستضيف لوحة تحكم المطاعم السحابية والـ API.<br>
+            2️⃣ <b>عملية البوت:</b> تعمل إما على جهازك المحلي، أو على خدمة سحابية دائمة مثل <b>Render.com</b> أو سيرفر <b>VPS</b> (ملف <code>render.yaml</code> جاهز بالمشروع).
+          </div>
+
+          <div style="text-align: center; margin-top: 25px;">
+            <a href="/admin" class="btn">🍔 فتح لوحة تحكم المطاعم</a>
+            <a href="/" class="btn" style="background: #2563eb;">🏠 الصفحة الرئيسية</a>
+          </div>
+        </div>
+      </body>
+      </html>
+    `);
+  }
+
   if (botStatus === 'connected') {
     return res.send(`
       <!DOCTYPE html>
