@@ -910,28 +910,9 @@ async function startWhatsAppBot() {
       keepAliveIntervalMs: 25000
     });
 
-    // إذا كان المستخدم قد حدد رقم الهاتف للربط المباشر (Pairing Code)
-    const rawPhoneNumber = BOT_PHONE_NUMBER.replace(/[^0-9]/g, '');
-    if (rawPhoneNumber && !state.creds.registered) {
-      setTimeout(async () => {
-        try {
-          const code = await sock.requestPairingCode(rawPhoneNumber);
-          pairingCode = code;
-          console.log('\n' + '='.repeat(55));
-          console.log(`🔑 كود ربط واتساب المباشر برقم هاتفك: [ ${code} ]`);
-          console.log('='.repeat(55));
-          console.log('📱 افتح واتساب ➔ الأجهزة المرتبطة ➔ "الربط باستخدام رقم الهاتف" واكتب الكود.');
-          console.log(`🌐 أو افتح في المتصفح: http://localhost:${PORT}/qr`);
-          console.log('='.repeat(55) + '\n');
-        } catch (err) {
-          console.error('⚠️ تعذر استخراج كود الربط:', err?.message || err);
-        }
-      }, 4000);
-    }
-
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
@@ -946,17 +927,46 @@ async function startWhatsAppBot() {
         } catch {}
         console.log('\n' + '-'.repeat(55));
         console.log('⏳ في انتظار مسح الـ QR أو الربط من هاتفك...');
+
+        // طلب كود الربط المباشر برقم الهاتف فور جاهزية السوكيت
+        const rawPhoneNumber = (BOT_PHONE_NUMBER || '').replace(/[^0-9]/g, '');
+        if (rawPhoneNumber && !state.creds.registered && !pairingCode) {
+          try {
+            const code = await sock.requestPairingCode(rawPhoneNumber);
+            pairingCode = code;
+            console.log('\n' + '='.repeat(55));
+            console.log(`🔑 كود ربط واتساب المباشر برقم هاتفك: [ ${code} ]`);
+            console.log('='.repeat(55));
+            console.log('📱 افتح واتساب ➔ الأجهزة المرتبطة ➔ "الربط باستخدام رقم الهاتف" واكتب الكود.');
+            console.log(`🌐 أو افتح في المتصفح: http://localhost:${PORT}/qr`);
+            console.log('='.repeat(55) + '\n');
+          } catch (err) {
+            console.error('⚠️ تعذر استخراج كود الربط:', err?.message || err);
+          }
+        }
       }
 
       if (connection === 'close') {
         currentQr = null;
+        pairingCode = null;
         botStatus = 'disconnected';
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
         console.log(`⚠️ انقطع الاتصال بواتساب (رمز الحالة: ${statusCode || 'غير معروف'}).`);
 
-        if (shouldReconnect) {
+        if (isLoggedOut && !state.creds.registered) {
+          console.log('🔄 المحاولة السابقة لم تكتمل أو انتهت صلاحيتها، جاري تنظيف الجلسة والبدء من جديد...');
+          try {
+            const fs = await import('fs');
+            if (fs.existsSync(SESSION_DIR)) {
+              fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+            }
+          } catch (e) {
+            console.error('خطأ أثناء مسح الجلسة القديمة:', e.message);
+          }
+          setTimeout(startWhatsAppBot, 3000);
+        } else if (!isLoggedOut) {
           console.log('🔄 جاري محاولة إعادة الاتصال خلال 3 ثوانٍ...');
           setTimeout(startWhatsAppBot, 3000);
         } else {
