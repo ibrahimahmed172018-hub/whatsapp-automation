@@ -1543,6 +1543,7 @@ async function startWhatsAppBot() {
       useMultiFileAuthState,
       DisconnectReason,
       fetchLatestBaileysVersion,
+      fetchLatestWaWebVersion,
       Browsers
     } = await import('@whiskeysockets/baileys');
     const { default: pino } = await import('pino');
@@ -1559,20 +1560,31 @@ async function startWhatsAppBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
     currentAuthState = { state, saveCreds };
-    const version = [2, 3000, 1046923675]; // إصدار واتساب ويب الأحدث المعتمد لتفادي أخطاء تعذر الربط
 
-    console.log(`📡 إصدار WhatsApp Web المعتمد: v${version.join('.')}`);
+    let version = [2, 3000, 1046925803];
+    try {
+      const waVersion = await fetchLatestWaWebVersion({});
+      if (waVersion?.version) {
+        version = waVersion.version;
+      }
+    } catch {
+      try {
+        const bVersion = await fetchLatestBaileysVersion();
+        if (bVersion?.version) version = bVersion.version;
+      } catch {}
+    }
+
+    console.log(`📡 إصدار WhatsApp Web المعتمد والحي: v${version.join('.')}`);
 
     sock = makeWASocket({
       version,
       auth: state,
       logger: pino({ level: 'silent' }),
-      printQRInTerminal: true,
-      browser: Browsers.macOS('Desktop'),
-      syncFullHistory: false,
+      printQRInTerminal: false,
+      browser: Browsers.macOS('Chrome'),
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 10000
+      keepAliveIntervalMs: 30000
     });
 
     sock.ev.on('creds.update', saveCreds);
