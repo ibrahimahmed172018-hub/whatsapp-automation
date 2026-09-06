@@ -23,7 +23,7 @@ dotenv.config();
 
 const PORT = process.env.PORT || 3000;
 const SESSION_DIR = process.env.SESSION_DIR || 'auth_info';
-const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || process.env.ADMIN_PHONE || '';
+const BOT_PHONE_NUMBER = '201143264206'; // رقم البوت النهائي الهاردكودد
 
 const app = express();
 app.use(express.json());

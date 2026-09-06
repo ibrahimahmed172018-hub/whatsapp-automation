@@ -4,7 +4,7 @@ dotenv.config();
 
 export const config = {
   // رقم الأدمن / خدمة العملاء لتلقي إشعارات الطلبات والدعم
-  adminPhone: process.env.ADMIN_PHONE || '201000000000',
+  adminPhone: '201143264206',
 
   // معرف جروب واتساب للمناديب والأدمن (ينتهي بـ @g.us)
   driversGroupJid: process.env.DRIVERS_GROUP_JID || '',
