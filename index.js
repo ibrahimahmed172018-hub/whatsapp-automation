@@ -1,3 +1,6 @@
+import dns from 'dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import express from 'express';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
@@ -1554,33 +1557,19 @@ async function startWhatsAppBot() {
       sock = null;
     }
 
-    // تنظيف أي جلسة سابقة غير مكتملة لمنع أخطاء تعذر الربط المتكررة
-    try {
-      const credsPath = path.join(SESSION_DIR, 'creds.json');
-      if (fs.existsSync(credsPath)) {
-        const raw = fs.readFileSync(credsPath, 'utf-8');
-        const creds = JSON.parse(raw);
-        if (creds && creds.registered === false) {
-          console.log('🧹 تنظيف محاولة ربط قديمة غير مكتملة (registered: false) للبدء بجلسة نقية 100%...');
-          fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-        }
-      }
-    } catch (e) {
-      console.log('ملاحظة أثناء فحص ملفات الجلسة:', e.message);
-    }
-
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
     currentAuthState = { state, saveCreds };
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    const version = [2, 3000, 1046923675]; // إصدار واتساب ويب الأحدث المعتمد لتفادي أخطاء تعذر الربط
 
-    console.log(`📡 إصدار Baileys: v${version.join('.')} (الأحدث: ${isLatest})`);
+    console.log(`📡 إصدار WhatsApp Web المعتمد: v${version.join('.')}`);
 
     sock = makeWASocket({
       version,
       auth: state,
       logger: pino({ level: 'silent' }),
       printQRInTerminal: true,
-      browser: Browsers.windows('Chrome'), // استخدام توقيع ويندوز كروم القياسي الموثوق
+      browser: Browsers.macOS('Desktop'),
+      syncFullHistory: false,
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 10000
@@ -1595,31 +1584,14 @@ async function startWhatsAppBot() {
         currentQr = qr;
         botStatus = 'waiting_for_qr_scan';
         console.log('\n' + '='.repeat(55));
-        console.log('📱 رمز QR جاهز للمسح! يمكنك مسحه من التيرمينال أو من المتصفح:');
+        console.log('📱 رمز QR جاهز للمسح بالكاميرا أو عبر المتصفح:');
         console.log(`👉 افتح في المتصفح: http://localhost:${PORT}/qr`);
         console.log('='.repeat(55) + '\n');
         try {
           qrcodeTerminal.generate(qr, { small: true });
         } catch {}
         console.log('\n' + '-'.repeat(55));
-        console.log('⏳ في انتظار مسح الـ QR بالكاميرا أو طلب كود الربط من هاتفك...');
-
-        // طلب كود الربط المباشر برقم الهاتف فور جاهزية السوكيت إذا وُجد رقم
-        const rawPhoneNumber = (BOT_PHONE_NUMBER || '').replace(/[^0-9]/g, '');
-        if (rawPhoneNumber && !state.creds.registered && !pairingCode) {
-          try {
-            const code = await sock.requestPairingCode(rawPhoneNumber);
-            pairingCode = code;
-            console.log('\n' + '='.repeat(55));
-            console.log(`🔑 كود ربط واتساب المباشر برقم هاتفك: [ ${code} ]`);
-            console.log('='.repeat(55));
-            console.log('📱 افتح واتساب ➔ الأجهزة المرتبطة ➔ "الربط باستخدام رقم الهاتف" واكتب الكود.');
-            console.log(`🌐 أو افتح في المتصفح: http://localhost:${PORT}/qr`);
-            console.log('='.repeat(55) + '\n');
-          } catch (err) {
-            console.error('⚠️ تعذر استخراج كود الربط:', err?.message || err);
-          }
-        }
+        console.log('⏳ في انتظار مسح الـ QR بالكاميرا من تطبيق واتساب...');
       }
 
       if (connection === 'close') {
@@ -1631,22 +1603,19 @@ async function startWhatsAppBot() {
 
         console.log(`⚠️ انقطع الاتصال بواتساب (رمز الحالة: ${statusCode || 'غير معروف'}).`);
 
-        if (isLoggedOut && !state.creds.registered) {
-          console.log('🔄 المحاولة السابقة لم تكتمل أو انتهت صلاحيتها، جاري تنظيف الجلسة والبدء من جديد...');
+        if (isLoggedOut) {
+          console.log('🔄 تم رفض الجلسة أو تسجيل الخروج (401)، جاري تنظيف الجلسة والبدء فوراً بجلسة نقية...');
           try {
-            const fs = await import('fs');
             if (fs.existsSync(SESSION_DIR)) {
               fs.rmSync(SESSION_DIR, { recursive: true, force: true });
             }
           } catch (e) {
-            console.error('خطأ أثناء مسح الجلسة القديمة:', e.message);
+            console.error('خطأ أثناء مسح الجلسة:', e.message);
           }
-          setTimeout(startWhatsAppBot, 3000);
-        } else if (!isLoggedOut) {
-          console.log('🔄 جاري محاولة إعادة الاتصال خلال 3 ثوانٍ...');
-          setTimeout(startWhatsAppBot, 3000);
+          setTimeout(startWhatsAppBot, 2000);
         } else {
-          console.log('❌ تم تسجيل الخروج من واتساب. يرجى حذف مجلد auth_info وإعادة التشغيل.');
+          console.log('🔄 جاري محاولة إعادة الاتصال خلال ثانيتين...');
+          setTimeout(startWhatsAppBot, 2000);
         }
       } else if (connection === 'open') {
         const isRegistered = Boolean(state.creds.registered);
