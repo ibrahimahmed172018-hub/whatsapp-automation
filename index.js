@@ -9,8 +9,10 @@ import {
   addRestaurant,
   updateRestaurant,
   toggleRestaurantActive,
-  deleteRestaurant
+  deleteRestaurant,
+  getAllOrders
 } from './db.js';
+import { sendWhatsAppMessage } from './whatsappService.js';
 
 dotenv.config();
 
@@ -97,6 +99,111 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
+
+/**
+ * ----------------------------------------------------
+ * نقاط اتصال WhatsApp Cloud API الرسمية من Meta
+ * ----------------------------------------------------
+ */
+
+// 1. التحقق من Webhook من قبل سيرفرات Meta (GET /webhook)
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  const expectedToken = process.env.META_VERIFY_TOKEN;
+
+  console.log('🔍 استلام طلب تحقق Webhook من Meta...');
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === expectedToken) {
+      console.log('✅ تم التحقق من الـ Webhook بنجاح! تم مطابقة Verify Token.');
+      return res.status(200).send(challenge);
+    } else {
+      console.warn('⚠️ فشل التحقق: Verify Token غير متطابق!');
+      return res.sendStatus(403);
+    }
+  }
+
+  return res.status(400).send('طلب غير صالح');
+});
+
+// 2. استقبال إشعارات ورسائل الواتساب الواردة (POST /webhook)
+app.post('/webhook', async (req, res) => {
+  // الرد بـ 200 OK فوراً لمنع فيسبوك من تكرار المحاولة
+  res.sendStatus(200);
+
+  const body = req.body;
+
+  if (body?.object === 'whatsapp_business_account') {
+    try {
+      const entry = body.entry?.[0];
+      const change = entry?.changes?.[0];
+      const value = change?.value;
+
+      // أ. معالجة الرسائل الواردة من المستخدمين
+      if (value?.messages && value.messages.length > 0) {
+        const message = value.messages[0];
+        const senderPhone = message.from; // رقم هاتف العميل (مثال: 201012345678)
+        const senderName = value.contacts?.[0]?.profile?.name || 'غير معروف';
+        const messageType = message.type;
+        const messageId = message.id;
+
+        let messageText = '';
+        if (messageType === 'text') {
+          messageText = message.text?.body || '';
+        } else if (messageType === 'interactive') {
+          // استخراج خيار القائمة التفاعلية (list_reply) أو الزر (button_reply)
+          messageText =
+            message.interactive?.list_reply?.id ||
+            message.interactive?.button_reply?.id ||
+            message.interactive?.list_reply?.title ||
+            '';
+        } else {
+          messageText = message.text?.body || '';
+        }
+
+        console.log('\n=========================================');
+        console.log(`📩 رسالة واردة جديدة عبر Meta Cloud API!`);
+        console.log(`👤 المرسل: ${senderName} (+${senderPhone})`);
+        console.log(`💬 المحتوى: "${messageText}" [نوع: ${messageType}]`);
+        console.log(`🆔 معرف الرسالة: ${messageId}`);
+        console.log(`🕒 الوقت: ${new Date(parseInt(message.timestamp) * 1000).toLocaleTimeString('ar-EG')}`);
+        console.log('=========================================\n');
+
+        if (messageText) {
+          const { handleCustomerMessage } = await import('./botHandler.js');
+          await handleCustomerMessage(senderPhone, messageText, null, `${senderPhone}@s.whatsapp.net`);
+        }
+      }
+
+      // ب. تتبع حالات تسليم الرسائل
+      if (value?.statuses && value.statuses.length > 0) {
+        const status = value.statuses[0];
+        // console.log(`ℹ️ تحديث حالة الرسالة (${status.id}): ${status.status}`);
+      }
+    } catch (err) {
+      console.error('❌ خطأ أثناء معالجة بيانات الـ Webhook:', err.message);
+    }
+  }
+});
+
+// 3. مسار تجريبي لاختبار إرسال الرسائل عبر الـ API
+app.post('/api/send-test', async (req, res) => {
+  const { to, message } = req.body;
+  if (!to || !message) {
+    return res.status(400).json({ error: 'يرجى إرسال to (رقم الهاتف) و message (نص الرسالة)' });
+  }
+
+  try {
+    const result = await sendWhatsAppMessage(to, message);
+    return res.json({ success: true, result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.response?.data || error.message });
+  }
+});
+
 
 // صفحة ويب تعرض جميع جروبات الواتساب مع زر لنسخ الـ JID بسهولة
 app.get('/groups', async (req, res) => {
@@ -326,6 +433,7 @@ app.get('/admin', async (req, res) => {
     const totalCount = restaurants.length;
     const activeCount = restaurants.filter(r => r.is_active === 1).length;
     const inactiveCount = totalCount - activeCount;
+    const recentOrders = await getAllOrders(20);
 
     // فحص ما إذا كان المدير يطلب تعديل مطعم محدد
     let editItem = null;
@@ -392,6 +500,61 @@ app.get('/admin', async (req, res) => {
           </div>
         </div>
       `).join('');
+    }
+
+    let ordersHtml = '';
+    if (recentOrders.length === 0) {
+      ordersHtml = `
+        <div class="empty-state">
+          <h3>لا توجد طلبات مسجلة حتى الآن</h3>
+          <p>عند قيام أي عميل بطلب أوردر عبر واتساب، ستظهر تفاصيله ورقم هاتفه الحقيقي هنا فوراً.</p>
+        </div>
+      `;
+    } else {
+      ordersHtml = `
+        <div style="background: white; border-radius: 12px; overflow-x: auto; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 30px;">
+          <table style="width: 100%; border-collapse: collapse; text-align: right; font-size: 14px;">
+            <thead>
+              <tr style="background: #f8fafc; border-bottom: 2px solid #e2e8f0; color: #475569;">
+                <th style="padding: 12px 16px;">#</th>
+                <th style="padding: 12px 16px;">📱 رقم العميل</th>
+                <th style="padding: 12px 16px;">🍔 القسم</th>
+                <th style="padding: 12px 16px;">📝 تفاصيل الأوردر</th>
+                <th style="padding: 12px 16px;">📍 العنوان</th>
+                <th style="padding: 12px 16px;">🕒 الوقت</th>
+                <th style="padding: 12px 16px;">⚡ الحالة</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${recentOrders.map(o => {
+                const rawPhone = String(o.phone || '').replace(/@lid/g, '').replace(/@s\.whatsapp\.net/g, '').replace(/[^0-9]/g, '');
+                const displayPhone = rawPhone.startsWith('20') && rawPhone.length === 12 ? '0' + rawPhone.slice(2) : (rawPhone || 'غير محدد');
+                const intlPhone = rawPhone.startsWith('20') ? rawPhone : (rawPhone.startsWith('01') ? '20' + rawPhone.slice(1) : rawPhone);
+                const timeStr = o.created_at ? new Date(o.created_at).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' }) : 'الآن';
+                return `
+                  <tr style="border-bottom: 1px solid #f1f5f9;">
+                    <td style="padding: 12px 16px; font-weight: bold; color: #075e54;">#${o.id}</td>
+                    <td style="padding: 12px 16px;">
+                      <div style="font-weight: bold; color: #1e293b; font-size: 15px;">${displayPhone}</div>
+                      ${intlPhone ? `
+                        <div style="display: flex; gap: 6px; margin-top: 4px;">
+                          <a href="https://wa.me/${intlPhone}" target="_blank" style="display: inline-block; background: #25d366; color: white; text-decoration: none; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">واتساب</a>
+                          <a href="tel:+${intlPhone}" style="display: inline-block; background: #0284c7; color: white; text-decoration: none; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">اتصال</a>
+                        </div>
+                      ` : ''}
+                    </td>
+                    <td style="padding: 12px 16px;"><span style="background: #e0e7ff; color: #3730a3; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: 500;">${o.category || 'عام'}</span></td>
+                    <td style="padding: 12px 16px; max-width: 320px; line-height: 1.5; color: #334155;">${o.details || '-'}</td>
+                    <td style="padding: 12px 16px; color: #64748b;">${o.delivery_location || 'طنطا'}</td>
+                    <td style="padding: 12px 16px; color: #64748b; font-size: 12px;">${timeStr}</td>
+                    <td style="padding: 12px 16px;"><span style="background: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 12px;">${o.status || 'PENDING'}</span></td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
     }
 
     const html = `
@@ -744,6 +907,14 @@ app.get('/admin', async (req, res) => {
             </form>
           </div>
 
+          <!-- قائمة أحدث طلبات الدليفري -->
+          <div class="section-title">
+            <span>🛵 أحدث طلبات الدليفري المستلمة (${recentOrders.length})</span>
+            <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">أرقام الهواتف تظهر صحيحة ومباشرة مع روابط اتصال ومحادثة فورية</span>
+          </div>
+
+          ${ordersHtml}
+
           <!-- قائمة المطاعم الحالية -->
           <div class="section-title">
             <span>📋 المطاعم والمينيوهات الحالية (${totalCount})</span>
@@ -879,6 +1050,71 @@ app.delete('/api/restaurants/:id', async (req, res) => {
   }
 });
 
+/**
+ * استخراج وتحويل رقم هاتف العميل الحقيقي من رسالة واتساب ومعالجة معرفات LID
+ */
+async function resolveCustomerPhoneNumber(msg, sockInstance, sessionDir = 'auth_info') {
+  const remoteJid = msg.key?.remoteJid || '';
+
+  // 1. إذا كان المعرف نفسه هو رقم هاتف عادي (@s.whatsapp.net أو @c.us)
+  if (remoteJid.endsWith('@s.whatsapp.net') || remoteJid.endsWith('@c.us')) {
+    const raw = remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+    if (raw) return raw;
+  }
+
+  // 2. فحص المعرف البديل (remoteJidAlt / participantAlt) الذي يرسله Baileys
+  const alt = msg.key?.remoteJidAlt || msg.key?.participantAlt;
+  if (alt && (alt.endsWith('@s.whatsapp.net') || alt.endsWith('@c.us'))) {
+    const raw = alt.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+    if (raw) return raw;
+  }
+
+  // 3. فحص مخزن Baileys الداخلي Signal LID Mapping
+  if (remoteJid.endsWith('@lid') && sockInstance?.signalRepository?.lidMapping?.getPNForLID) {
+    try {
+      const pnJid = await sockInstance.signalRepository.lidMapping.getPNForLID(remoteJid);
+      if (pnJid) {
+        const raw = pnJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+        if (raw) return raw;
+      }
+    } catch {}
+  }
+
+  // 4. فحص ملفات المطابقة العكسية المحفوظة في auth_info و auth_info_old_stale
+  if (remoteJid.includes('@lid')) {
+    const lidUser = remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const dirs = [sessionDir, 'auth_info_old_stale'];
+      for (const d of dirs) {
+        if (!d) continue;
+        const mappingFile = path.join(d, `lid-mapping-${lidUser}_reverse.json`);
+        if (fs.existsSync(mappingFile)) {
+          const content = fs.readFileSync(mappingFile, 'utf8');
+          const parsed = JSON.parse(content);
+          const raw = String(parsed).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+          if (raw) return raw;
+        }
+      }
+    } catch {}
+  }
+
+  // 5. فحص إذا كان العميل كتب رقم مصري صريح داخل نص الرسالة
+  const text =
+    msg.message?.conversation ||
+    msg.message?.extendedTextMessage?.text ||
+    msg.message?.imageMessage?.caption ||
+    '';
+  const egPhoneMatch = text.match(/(?:(?:\+|00)?20|0)?(1[0125]\d{8})\b/);
+  if (egPhoneMatch) {
+    return '20' + egPhoneMatch[1];
+  }
+
+  // الاحتياط الأخير: تنظيف المعرف بدون @lid
+  return remoteJid.replace(/@lid/g, '').replace(/@s\.whatsapp\.net/g, '').replace(/@g\.us/g, '').split(':')[0].replace(/[^0-9]/g, '');
+}
+
 // تشغيل وإدارة عميل Baileys
 async function startWhatsAppBot() {
   if (process.env.VERCEL) return;
@@ -998,16 +1234,27 @@ async function startWhatsAppBot() {
       const myNumber = state.creds.me?.id?.split(':')[0] || '';
 
       for (const msg of messages) {
-        const remoteJid = msg.key.remoteJid;
+        const remoteJid = msg.key?.remoteJid;
         if (!remoteJid) continue;
 
+        // تجاهل حالات واتساب والبث والرسائل الإخبارية
+        if (
+          remoteJid === 'status@broadcast' ||
+          remoteJid.endsWith('@broadcast') ||
+          remoteJid.endsWith('@newsletter')
+        ) {
+          continue;
+        }
+
         const isGroup = remoteJid.endsWith('@g.us');
-        const customerNumber = remoteJid.replace('@s.whatsapp.net', '').replace('@g.us', '');
+
+        // استخراج رقم هاتف العميل الحقيقي المعتمد وحل مشكلة @lid
+        const customerNumber = await resolveCustomerPhoneNumber(msg, sock, SESSION_DIR);
 
         // إذا كانت الرسالة مرسلة من نفس الرقم في شات شخص آخر، نتجاهلها
         // لكن لو أرسلها لنفسه (Message Yourself / Note to Self)، نسمح له بتجربة البوت!
-        const isFromMe = Boolean(msg.key.fromMe);
-        const isNoteToSelf = isFromMe && myNumber && customerNumber.includes(myNumber);
+        const isFromMe = Boolean(msg.key?.fromMe);
+        const isNoteToSelf = isFromMe && myNumber && (customerNumber.includes(myNumber) || remoteJid.includes(myNumber));
 
         if (isFromMe && !isNoteToSelf) {
           continue;
@@ -1026,7 +1273,7 @@ async function startWhatsAppBot() {
 
         console.log('\n' + '─'.repeat(45));
         console.log(`📩 رسالة جديدة من: ${isGroup ? 'مجموعة' : (isNoteToSelf ? 'تجربة ذاتية (نفس الرقم)' : 'عميل')}`);
-        console.log(`📞 رقم العميل: +${customerNumber} | الحالة الحالية: [${user.state}]`);
+        console.log(`📞 رقم العميل الحقيقي: +${customerNumber} (المعرف: ${remoteJid}) | الحالة الحالية: [${user.state}]`);
         console.log(`💬 نص الرسالة: "${text}"`);
         console.log(`🕒 التوقيت: ${new Date().toLocaleTimeString('ar-EG')}`);
         console.log('─'.repeat(45));
@@ -1056,9 +1303,12 @@ if (!process.env.VERCEL) {
   const server = app.listen(PORT, async () => {
     console.log(`🌐 خادم Express يعمل على: http://localhost:${PORT}`);
     console.log(`📱 رابط صفحة الـ QR بالمتصفح: http://localhost:${PORT}/qr`);
-    console.log(`🍔 رابط لوحة تحكم المطاعم: http://localhost:${PORT}/admin`);
     await initDB();
-    await startWhatsAppBot();
+    if (process.env.ENABLE_BAILEYS === 'true') {
+      await startWhatsAppBot();
+    } else {
+      console.log('🚀 تشغيل البوت عبر Meta WhatsApp Cloud API (Baileys معطل تلقائياً).');
+    }
   });
 
   // إنهاء السيرفر والاتصال بأمان عند الإيقاف (Graceful Shutdown)
@@ -1080,6 +1330,7 @@ if (!process.env.VERCEL) {
   initDB().catch(console.error);
 }
 
+export { app, sendWhatsAppMessage };
 export default app;
 
 

@@ -91,9 +91,15 @@ export const initDB = async () => {
           phone TEXT PRIMARY KEY,
           state TEXT NOT NULL DEFAULT 'IDLE',
           last_interaction DATETIME DEFAULT CURRENT_TIMESTAMP,
-          current_order_data TEXT DEFAULT '{}'
+          current_data TEXT DEFAULT '{}'
         )
       `);
+
+      // إضافة عمود current_data تلقائياً إن كان الجدول منشأ مسبقاً
+      try {
+        await run(`ALTER TABLE users ADD COLUMN current_data TEXT DEFAULT '{}'`);
+      } catch {}
+
 
       await run(`
         CREATE TABLE IF NOT EXISTS orders (
@@ -302,13 +308,14 @@ export const getUserState = async (phone) => {
     try {
       const { data, error } = await supabase.from('users').select('*').eq('phone', phone).maybeSingle();
       if (!error && data) {
-        let orderData = data.current_order_data;
+        let orderData = data.current_data ?? data.current_order_data;
         if (typeof orderData === 'string') {
           try { orderData = JSON.parse(orderData); } catch { orderData = {}; }
         }
         return {
           phone: data.phone,
           state: data.state,
+          current_data: orderData || {},
           current_order_data: orderData || {},
           last_interaction: data.last_interaction
         };
@@ -322,8 +329,11 @@ export const getUserState = async (phone) => {
           current_order_data: {},
           last_interaction: new Date().toISOString()
         };
-        await supabase.from('users').upsert(newUser);
-        return newUser;
+        try { await supabase.from('users').upsert(newUser); } catch {}
+        return {
+          ...newUser,
+          current_data: {}
+        };
       }
     } catch (err) {
       console.error('⚠️ خطأ في getUserState من Supabase:', err.message);
@@ -334,26 +344,29 @@ export const getUserState = async (phone) => {
   const user = await get(`SELECT * FROM users WHERE phone = ?`, [phone]);
   if (!user) {
     await run(
-      `INSERT INTO users (phone, state, current_order_data, last_interaction) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+      `INSERT INTO users (phone, state, current_data, last_interaction) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
       [phone, CustomerState.IDLE, '{}']
     );
     return {
       phone,
       state: CustomerState.IDLE,
+      current_data: {},
       current_order_data: {},
       last_interaction: new Date().toISOString()
     };
   }
 
   let orderData = {};
+  const rawData = user.current_data ?? user.current_order_data ?? '{}';
   try {
-    orderData = JSON.parse(user.current_order_data || '{}');
+    orderData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
   } catch {
     orderData = {};
   }
 
   return {
     ...user,
+    current_data: orderData,
     current_order_data: orderData
   };
 };
@@ -364,7 +377,7 @@ export const setUserState = async (phone, state, data = null) => {
       let orderData = data;
       if (orderData === null) {
         const existing = await getUserState(phone);
-        orderData = existing.current_order_data;
+        orderData = existing.current_data ?? existing.current_order_data;
       }
 
       const payload = {
@@ -381,13 +394,14 @@ export const setUserState = async (phone, state, data = null) => {
         .single();
 
       if (!error && updated) {
-        let parsed = updated.current_order_data;
+        let parsed = updated.current_data ?? updated.current_order_data;
         if (typeof parsed === 'string') {
           try { parsed = JSON.parse(parsed); } catch { parsed = {}; }
         }
         return {
           phone: updated.phone,
           state: updated.state,
+          current_data: parsed || {},
           current_order_data: parsed || {},
           last_interaction: updated.last_interaction
         };
@@ -400,17 +414,29 @@ export const setUserState = async (phone, state, data = null) => {
   // Fallback SQLite
   const existing = await get(`SELECT * FROM users WHERE phone = ?`, [phone]);
   const serializedData =
-    data !== null ? JSON.stringify(data) : existing?.current_order_data || '{}';
+    data !== null ? JSON.stringify(data) : (existing?.current_data ?? existing?.current_order_data ?? '{}');
 
-  await run(
-    `INSERT INTO users (phone, state, current_order_data, last_interaction)
-     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(phone) DO UPDATE SET
-       state = excluded.state,
-       current_order_data = excluded.current_order_data,
-       last_interaction = CURRENT_TIMESTAMP`,
-    [phone, state, serializedData]
-  );
+  try {
+    await run(
+      `INSERT INTO users (phone, state, current_data, last_interaction)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(phone) DO UPDATE SET
+         state = excluded.state,
+         current_data = excluded.current_data,
+         last_interaction = CURRENT_TIMESTAMP`,
+      [phone, state, serializedData]
+    );
+  } catch {
+    await run(
+      `INSERT INTO users (phone, state, current_order_data, last_interaction)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(phone) DO UPDATE SET
+         state = excluded.state,
+         current_order_data = excluded.current_order_data,
+         last_interaction = CURRENT_TIMESTAMP`,
+      [phone, state, serializedData]
+    );
+  }
 
   return getUserState(phone);
 };
@@ -419,7 +445,33 @@ export const resetUserState = async (phone) => {
   return setUserState(phone, CustomerState.IDLE, {});
 };
 
+export const getAllOrders = async (limit = 50) => {
+  if (isSupabaseEnabled) {
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(limit);
+      if (!error && data) return data;
+    } catch (err) {
+      console.error('⚠️ خطأ في getAllOrders في Supabase:', err.message);
+    }
+  }
+
+  // Fallback SQLite
+  return await all(`SELECT * FROM orders ORDER BY id DESC LIMIT ?`, [limit]);
+};
+
 export const saveOrder = async (phone, orderDetails = {}) => {
+  // تنظيف رقم الهاتف وإزالة أي لاحقة LID أو JID لضمان حفظ رقم نظيف
+  const cleanPhone = String(phone || '')
+    .replace(/@lid/g, '')
+    .replace(/@s\.whatsapp\.net/g, '')
+    .replace(/@c\.us/g, '')
+    .replace(/[^0-9]/g, '');
+  const finalPhone = cleanPhone || phone;
+
   const {
     category = null,
     details = null,
@@ -433,7 +485,7 @@ export const saveOrder = async (phone, orderDetails = {}) => {
       const { data, error } = await supabase
         .from('orders')
         .insert({
-          phone,
+          phone: finalPhone,
           category,
           details,
           pickup_location,
@@ -464,12 +516,12 @@ export const saveOrder = async (phone, orderDetails = {}) => {
   const result = await run(
     `INSERT INTO orders (phone, category, details, pickup_location, delivery_location, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [phone, category, details, pickup_location, delivery_location, status]
+    [finalPhone, category, details, pickup_location, delivery_location, status]
   );
 
   return {
     id: result.lastID,
-    phone,
+    phone: finalPhone,
     category,
     details,
     pickup_location,
@@ -485,6 +537,7 @@ export default {
   setUserState,
   resetUserState,
   saveOrder,
+  getAllOrders,
   getAllRestaurants,
   getRestaurantById,
   addRestaurant,

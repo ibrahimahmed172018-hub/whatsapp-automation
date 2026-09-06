@@ -1,7 +1,7 @@
 {
   "name": "tanta-delivery-whatsapp-bot",
   "version": "1.0.0",
-  "description": "WhatsApp delivery bot for Tanta using Baileys and Express",
+  "description": "WhatsApp delivery bot for Tanta using Meta WhatsApp Cloud API and Express",
   "type": "module",
   "main": "index.js",
   "engines": {
@@ -29,6 +29,7 @@
     "@google/genai": "^2.21.0",
     "@supabase/supabase-js": "^2.109.0",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "axios": "^1.20.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "pino": "^10.3.1",

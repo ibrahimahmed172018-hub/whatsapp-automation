@@ -71,16 +71,36 @@ ${details}
 لتعديل أو إلغاء الطلب أرسل: "0" أو "إلغاء"`,
 
     // نجاح وتأكيد الطلب وشكر العميل
-    orderConfirmedThankYou: (orderId) => `🙏 شكراً لتأكيد طلبك يا فندم!
-تم تسجيل أوردرك بنجاح برقم: #${orderId}
-🛵 تم إرسال بيانات طلبك للمناديب وكباتن الدليفري في طنطا فوراً، وهيتم التواصل والتحرك في أسرع وقت! 💨`,
+    orderConfirmedThankYou: (orderId) => `تم تأكيد طلبك بنجاح ومندوبنا هيتواصل معاك فوراً! 🛵💨 (كود الأوردر: #${orderId})`,
 
-    // إشعار فوري لجروب المناديب والأدمن
-    groupOrderAlert: (customerPhone, category, details, time) => `🚨 أوردر جديد!
-- العميل: +${customerPhone}
+    // إشعار فوري للأدمن والمناديب
+    adminOrderAlert: (orderId, customerPhone, category, details, time) => {
+      const clean = String(customerPhone || '')
+        .replace(/@lid/g, '')
+        .replace(/@s\.whatsapp\.net/g, '')
+        .replace(/@c\.us/g, '')
+        .replace(/[^0-9]/g, '');
+      return `🚨 أوردر جديد يا كابتن!
+- كود الأوردر: #${orderId}
+- رقم العميل: +${clean || customerPhone}
 - القسم: ${category}
 - التفاصيل: ${details}
-- الوقت: ${time}`,
+- الوقت: ${time}`;
+    },
+
+    // إشعار فوري لجروب المناديب والأدمن
+    groupOrderAlert: (customerPhone, category, details, time, orderId = null) => {
+      const clean = String(customerPhone || '')
+        .replace(/@lid/g, '')
+        .replace(/@s\.whatsapp\.net/g, '')
+        .replace(/@c\.us/g, '')
+        .replace(/[^0-9]/g, '');
+      return `🚨 أوردر جديد يا كابتن!
+${orderId ? `- كود الأوردر: #${orderId}\n` : ''}- رقم العميل: +${clean || customerPhone}
+- القسم: ${category}
+- التفاصيل: ${details}
+- الوقت: ${time}`;
+    },
 
     // إلغاء الطلب
     orderCancelled: `❌ تم إلغاء الطلب والعودة للقائمة الرئيسية.`
@@ -94,6 +114,51 @@ ${details}
     '4': 'عروض اليوم',
     '5': 'محلات المنطقة',
     '6': 'خدمة العملاء'
+  },
+
+  // تعريف القائمة التفاعلية الرسمية لـ WhatsApp Cloud API
+  interactiveMenu: {
+    headerText: '🛵 دليفري طنطا',
+    bodyText: 'أهلاً بك في خدمة دليفري طنطا 🛵💨\nأسرع وأوفر توصيل في جميع مناطق طنطا!\n\nاختر الخدمة المطلوبة من القائمة أدناه:',
+    footerText: 'اختر من القائمة أو أرسل رقم الخدمة (1-6)',
+    buttonText: 'قائمة الخدمات 📋',
+    sections: [
+      {
+        title: 'خدمات التوصيل في طنطا',
+        rows: [
+          {
+            id: 'option_1',
+            title: '🛵 دليفري ومشاوير',
+            description: 'توصيل طرد أو مشوار خاص داخل طنطا'
+          },
+          {
+            id: 'option_2',
+            title: '🍔 مطاعم طنطا',
+            description: 'طلب وجبات من جميع مطاعم طنطا'
+          },
+          {
+            id: 'option_3',
+            title: '🛒 تسوق من طنطا',
+            description: 'سوبرماركت، خضار، فواكه، صيدليات'
+          },
+          {
+            id: 'option_4',
+            title: '🏷️ عروض اليوم',
+            description: 'خصومات وتخفيضات التوصيل الحالية'
+          },
+          {
+            id: 'option_5',
+            title: '🏪 محلات المنطقة',
+            description: 'مكتبات، حلويات، هدايا، إلكترونيات'
+          },
+          {
+            id: 'option_6',
+            title: '📞 كلم خدمة العملاء',
+            description: 'تحدث مع الدعم البشري ومسؤول الخدمة'
+          }
+        ]
+      }
+    ]
   }
 };
 
