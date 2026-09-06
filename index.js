@@ -1,6 +1,8 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import QRCode from 'qrcode';
+import fs from 'fs';
+import path from 'path';
 import {
   initDB,
   getUserState,
@@ -39,6 +41,7 @@ let sock = null;
 let botStatus = 'initializing';
 let currentQr = null;
 let pairingCode = null;
+let currentAuthState = null;
 
 // نقاط فحص السيرفر
 app.get('/', (req, res) => {
@@ -261,7 +264,90 @@ app.get('/groups', async (req, res) => {
   }
 });
 
-// صفحة ويب مخصصة لعرض رمز QR بدقة عالية وسهولة مسحه بالكاميرا
+// نقطة استخراج صورة رمز QR كـ PNG مع رأس no-cache
+app.get('/qr/image', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  if (!currentQr) {
+    res.setHeader('Content-Type', 'image/svg+xml');
+    return res.send(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300">
+        <rect width="300" height="300" fill="#f8fafc" rx="16" stroke="#cbd5e1" stroke-width="2"/>
+        <text x="50%" y="125" text-anchor="middle" fill="#075e54" font-family="sans-serif" font-size="32">⏳</text>
+        <text x="50%" y="175" text-anchor="middle" fill="#0f172a" font-family="system-ui, sans-serif" font-size="16" font-weight="bold">جاري إنشاء رمز QR...</text>
+        <text x="50%" y="205" text-anchor="middle" fill="#64748b" font-family="system-ui, sans-serif" font-size="13">يرجى الانتظار ثوانٍ معدودة</text>
+      </svg>
+    `);
+  }
+
+  try {
+    const buffer = await QRCode.toBuffer(currentQr, {
+      width: 320,
+      margin: 2,
+      color: {
+        dark: '#075e54',
+        light: '#ffffff'
+      }
+    });
+    res.setHeader('Content-Type', 'image/png');
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).send('خطأ أثناء توليد صورة الـ QR');
+  }
+});
+
+// فحص حالة الاتصال وتوفر الـ QR والكود لحظياً
+app.get('/api/bot-status', (req, res) => {
+  const registered = Boolean(currentAuthState?.state?.creds?.registered);
+  const botNum = (currentAuthState?.state?.creds?.me?.id || '').split(':')[0].replace(/[^0-9]/g, '') || null;
+
+  res.json({
+    status: botStatus,
+    registered,
+    botNumber: botNum,
+    hasQr: Boolean(currentQr),
+    pairingCode: pairingCode || null,
+    timestamp: Date.now()
+  });
+});
+
+// توليد كود ربط فوري لهاتف العميل عند الطلب
+app.post('/api/request-pairing-code', async (req, res) => {
+  try {
+    if (!sock) {
+      return res.status(503).json({ success: false, message: 'سيرفر البوت قيد التهيئة، يرجى المحاولة بعد ثوانٍ.' });
+    }
+    if (botStatus === 'connected') {
+      return res.json({ success: false, message: 'البوت متصل بالفعل بواتساب!' });
+    }
+
+    let phone = (req.body?.phone || req.query?.phone || BOT_PHONE_NUMBER || '').toString().trim().replace(/[^0-9]/g, '');
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'يرجى كتابة رقم الهاتف أولاً (مثال: 01143264206 أو 201023678882)' });
+    }
+
+    if (phone.startsWith('01') && phone.length === 11) {
+      phone = '2' + phone;
+    }
+
+    console.log(`📲 طلب كود ربط فوري لرقم الهاتف: +${phone}`);
+    const code = await sock.requestPairingCode(phone);
+    pairingCode = code;
+    console.log(`🔑 تم توليد كود الربط بنجاح: ${code}`);
+
+    return res.json({ success: true, code, phone });
+  } catch (err) {
+    console.error('⚠️ تعذر توليد كود الربط:', err?.message || err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'تعذر استخراج الكود حالياً. يفضل مسح رمز QR بالكاميرا فهو فوري ومضمون 100%.'
+    });
+  }
+});
+
+// صفحة ويب مخصصة للربط المزدوج (مسح QR بالكاميرا أو كود التحقق برقم الهاتف)
 app.get('/qr', async (req, res) => {
   if (process.env.VERCEL) {
     return res.send(`
@@ -299,7 +385,7 @@ app.get('/qr', async (req, res) => {
             منصة <b>Vercel</b> مصممة كـ <b>Serverless</b> (سيرفرات سحابية لإدارة لوحة التحكم <code>/admin</code> وواجهات الـ API وقاعدة بيانات Supabase، وتغلق تلقائياً بعد ثوانٍ لتوفير الموارد).<br><br>
             بوت واتساب (Baileys) يحتاج اتصال WebSocket دائم ومستمر 24 ساعة دون إغلاق، لذلك:<br>
             1️⃣ <b>Vercel:</b> يستضيف لوحة تحكم المطاعم السحابية والـ API.<br>
-            2️⃣ <b>عملية البوت:</b> تعمل إما على جهازك المحلي، أو على خدمة سحابية دائمة مثل <b>Render.com</b> أو سيرفر <b>VPS</b> (ملف <code>render.yaml</code> جاهز بالمشروع).
+            2️⃣ <b>عملية البوت:</b> تعمل إما على جهازك المحلي، أو على سيرفر دائم.
           </div>
 
           <div style="text-align: center; margin-top: 25px;">
@@ -312,100 +398,445 @@ app.get('/qr', async (req, res) => {
     `);
   }
 
-  if (botStatus === 'connected') {
-    return res.send(`
-      <!DOCTYPE html>
-      <html dir="rtl" lang="ar">
-      <head><meta charset="UTF-8"><title>تم الربط بنجاح</title></head>
-      <body style="font-family: system-ui, sans-serif; text-align: center; background: #e8f5e9; padding: 50px;">
-        <h1 style="color: #2e7d32;">✅ تم ربط البوت بواتساب بنجاح!</h1>
-        <p style="font-size: 18px;">البوت متصل الآن وجاهز لاستقبال طلبات دليفري طنطا.</p>
-      </body>
-      </html>
-    `);
-  }
+  const defaultPhone = (BOT_PHONE_NUMBER || '').replace(/[^0-9]/g, '');
 
-  if (pairingCode) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html dir="rtl" lang="ar">
-      <head><meta charset="UTF-8"><title>كود الربط برقم الهاتف</title></head>
-      <body style="font-family: system-ui, sans-serif; text-align: center; background: #f0f2f5; padding: 40px;">
-        <div style="background: white; max-width: 480px; margin: 0 auto; padding: 30px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
-          <h2 style="color: #075e54;">🔑 كود ربط واتساب لهاتفك</h2>
-          <div style="font-size: 36px; font-weight: bold; letter-spacing: 4px; background: #e8f5e9; padding: 15px; border-radius: 8px; color: #1b5e20; margin: 20px 0;">
-            ${pairingCode}
-          </div>
-          <p style="text-align: right;">طريقة التفعيل من هاتفك:</p>
-          <ol style="text-align: right; line-height: 1.8;">
-            <li>افتح واتساب على هاتفك.</li>
-            <li>ادخل على <b>الأجهزة المرتبطة</b> (Linked Devices).</li>
-            <li>اضغط <b>ربط جهاز</b>.</li>
-            <li>اختر <b>"الربط باستخدام رقم الهاتف بدلاً من ذلك"</b>.</li>
-            <li>اكتب الكود الظاهر أعلاه.</li>
-          </ol>
+  res.send(`
+    <!DOCTYPE html>
+    <html dir="rtl" lang="ar">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>ربط بوت دليفري طنطا بواتساب</title>
+      <style>
+        :root {
+          --wa-dark: #075e54;
+          --wa-green: #25d366;
+          --wa-light: #128c7e;
+          --bg-gray: #f0f2f5;
+          --text-main: #1f2937;
+          --text-muted: #6b7280;
+        }
+        * { box-sizing: border-box; }
+        body {
+          font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+          background: var(--bg-gray);
+          color: var(--text-main);
+          margin: 0;
+          padding: 24px 16px;
+          min-height: 100vh;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+        }
+        .container {
+          background: white;
+          max-width: 880px;
+          width: 100%;
+          border-radius: 20px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+          padding: 32px;
+        }
+        .header {
+          text-align: center;
+          margin-bottom: 28px;
+        }
+        .header h1 {
+          color: var(--wa-dark);
+          margin: 0 0 8px 0;
+          font-size: 26px;
+        }
+        .header p {
+          color: var(--text-muted);
+          margin: 0 0 14px 0;
+          font-size: 15px;
+        }
+        .badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 16px;
+          border-radius: 9999px;
+          font-size: 13px;
+          font-weight: 600;
+          background: #fef3c7;
+          color: #92400e;
+        }
+        .badge-ready { background: #dcfce7; color: #166534; }
+        .grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 24px;
+          margin-top: 10px;
+        }
+        @media (max-width: 768px) {
+          .grid { grid-template-columns: 1fr; }
+          .container { padding: 20px; }
+        }
+        .card-method {
+          background: #f8fafc;
+          border: 2px solid #e2e8f0;
+          border-radius: 16px;
+          padding: 24px;
+          text-align: center;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          position: relative;
+        }
+        .card-recommended {
+          border-color: #22c55e;
+          background: #f0fdf4;
+        }
+        .ribbon {
+          position: absolute;
+          top: -12px;
+          left: 50%;
+          transform: translateX(-50%);
+          background: #16a34a;
+          color: white;
+          font-size: 12px;
+          font-weight: bold;
+          padding: 3px 14px;
+          border-radius: 12px;
+          box-shadow: 0 2px 6px rgba(22, 163, 74, 0.3);
+        }
+        .method-title {
+          font-size: 19px;
+          font-weight: 700;
+          color: var(--wa-dark);
+          margin: 8px 0 6px 0;
+        }
+        .method-desc {
+          font-size: 13px;
+          color: var(--text-muted);
+          margin-bottom: 16px;
+          line-height: 1.5;
+        }
+        .qr-wrapper {
+          background: white;
+          border-radius: 12px;
+          padding: 10px;
+          display: inline-block;
+          border: 1px solid #cbd5e1;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+          margin-bottom: 12px;
+        }
+        .qr-img {
+          width: 250px;
+          height: 250px;
+          display: block;
+          border-radius: 8px;
+        }
+        .steps {
+          text-align: right;
+          background: white;
+          border-radius: 10px;
+          padding: 14px 16px;
+          margin-top: 14px;
+          font-size: 13px;
+          color: #334155;
+          border: 1px solid #e2e8f0;
+          line-height: 1.7;
+        }
+        .steps ol {
+          margin: 6px 0 0 0;
+          padding-right: 20px;
+        }
+        .code-input-group {
+          margin: 16px 0;
+          text-align: right;
+        }
+        .code-input-group label {
+          display: block;
+          font-size: 13px;
+          font-weight: 600;
+          color: #374151;
+          margin-bottom: 6px;
+        }
+        .input-row {
+          display: flex;
+          gap: 8px;
+        }
+        .input-phone {
+          flex: 1;
+          padding: 10px 14px;
+          border: 2px solid #cbd5e1;
+          border-radius: 8px;
+          font-size: 15px;
+          font-family: inherit;
+          direction: ltr;
+          text-align: right;
+        }
+        .input-phone:focus {
+          border-color: var(--wa-light);
+          outline: none;
+        }
+        .btn-action {
+          background: var(--wa-dark);
+          color: white;
+          border: none;
+          padding: 10px 18px;
+          border-radius: 8px;
+          font-weight: 600;
+          font-size: 14px;
+          cursor: pointer;
+          transition: background 0.2s;
+          white-space: nowrap;
+        }
+        .btn-action:hover { background: #054c44; }
+        .btn-action:disabled { background: #9ca3af; cursor: not-allowed; }
+        .code-box {
+          background: white;
+          border: 2px dashed #075e54;
+          border-radius: 12px;
+          padding: 18px;
+          margin: 16px 0;
+          text-align: center;
+        }
+        .code-text {
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-size: 32px;
+          font-weight: 800;
+          color: #075e54;
+          letter-spacing: 5px;
+          user-select: all;
+        }
+        .countdown {
+          font-size: 13px;
+          color: #b45309;
+          margin-top: 8px;
+          font-weight: 600;
+        }
+        .btn-copy {
+          background: #e0f2fe;
+          color: #0369a1;
+          border: 1px solid #bae6fd;
+          padding: 6px 14px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          margin-top: 10px;
+        }
+        .btn-copy:hover { background: #bae6fd; }
+        .success-box {
+          text-align: center;
+          padding: 50px 20px;
+        }
+        .btn-success {
+          display: inline-block;
+          background: #16a34a;
+          color: white;
+          text-decoration: none;
+          padding: 14px 28px;
+          border-radius: 10px;
+          font-size: 16px;
+          font-weight: 700;
+          margin-top: 20px;
+        }
+        .btn-success:hover { background: #15803d; }
+      </style>
+    </head>
+    <body>
+      <div class="container" id="mainContainer">
+        <div class="header">
+          <h1>🛵 ربط بوت واتساب - دليفري طنطا</h1>
+          <p>اختر الطريقة الأنسب لربط رقم هاتفك مع البوت لبدء استقبال الطلبات فوراً</p>
+          <div id="statusBadge" class="badge">🟡 جاري تجهيز الرمز والاتصال...</div>
         </div>
-      </body>
-      </html>
-    `);
-  }
 
-  if (!currentQr) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html dir="rtl" lang="ar">
-      <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="3">
-        <title>جاري تجهيز الرمز</title>
-      </head>
-      <body style="font-family: system-ui, sans-serif; text-align: center; padding: 50px;">
-        <h2>⏳ جاري إنشاء رمز الـ QR...</h2>
-        <p>يرجى الانتظار بضع ثوانٍ (الصفحة تتحدث تلقائياً).</p>
-      </body>
-      </html>
-    `);
-  }
+        <div class="grid">
+          <!-- الخيار الأول: مسح الـ QR (موصى به) -->
+          <div class="card-method card-recommended">
+            <span class="ribbon">⭐ الطريقة الأسرع والأضمن 100%</span>
+            <div>
+              <div class="method-title">📷 مسح رمز الـ QR بالكاميرا</div>
+              <div class="method-desc">بدون كتابة أكواد وبدون "تعذر الربط". وجّه الكاميرا فقط ويتم الربط في ثانية واحدة!</div>
 
-  try {
-    const qrDataUrl = await QRCode.toDataURL(currentQr, { width: 340, margin: 2 });
-    res.send(`
-      <!DOCTYPE html>
-      <html dir="rtl" lang="ar">
-      <head>
-        <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="20">
-        <title>ربط بوت دليفري طنطا</title>
-        <style>
-          body { font-family: system-ui, -apple-system, sans-serif; text-align: center; background: #f0f2f5; padding: 25px; margin: 0; }
-          .card { background: white; max-width: 460px; margin: 0 auto; padding: 25px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
-          h2 { color: #075e54; margin-top: 0; }
-          img { width: 300px; height: 300px; border-radius: 12px; border: 1px solid #e0e0e0; }
-          .steps { text-align: right; background: #f9f9f9; padding: 15px 20px; border-radius: 10px; margin-top: 20px; font-size: 14px; border-right: 4px solid #075e54; }
-          ol { margin: 8px 0 0 0; padding-right: 20px; line-height: 1.7; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h2>🛵 ربط بوت دليفري طنطا بواتساب</h2>
-          <p style="color: #555;">امسح هذا الرمز من هاتفك (واضح وبدقة عالية):</p>
-          <img src="${qrDataUrl}" alt="WhatsApp QR Code" />
-          <div class="steps">
-            <strong>خطوات الربط من الموبايل:</strong>
-            <ol>
-              <li>افتح تطبيق <b>واتساب</b> على هاتفك.</li>
-              <li>اضغط على القائمة (الثلاث نقاط) ➔ <b>الأجهزة المرتبطة</b>.</li>
-              <li>اضغط <b>ربط جهاز</b> ووجّه الكاميرا نحو هذا الرمز.</li>
-            </ol>
+              <div class="qr-wrapper">
+                <img id="qrImg" class="qr-img" src="/qr/image" alt="WhatsApp QR Code" />
+              </div>
+
+              <div style="font-size: 12px; color: #15803d; font-weight: 500;">
+                🔄 يتجدد الرمز تلقائياً في الخلفية بدون إعادة تحميل الصفحة
+              </div>
+            </div>
+
+            <div class="steps">
+              <strong>خطوات الربط من الموبايل:</strong>
+              <ol>
+                <li>افتح تطبيق <b>واتساب</b> على هاتفك.</li>
+                <li>اضغط على (الثلاث نقاط) ➔ <b>الأجهزة المرتبطة</b> (Linked Devices).</li>
+                <li>اضغط <b>ربط جهاز</b> ووجّه كاميرا الهاتف نحو المربع أعلاه.</li>
+              </ol>
+            </div>
           </div>
-          <p style="color: #888; font-size: 12px; margin-top: 15px;">🔄 تتحدث هذه الصفحة تلقائياً لتجديد الرمز فور انتهاء صلاحيته.</p>
+
+          <!-- الخيار الثاني: كود الربط برقم الهاتف -->
+          <div class="card-method">
+            <div>
+              <div class="method-title">🔢 أو الربط بكود التحقق ورقم الهاتف</div>
+              <div class="method-desc">إذا كانت كاميرا هاتفك لا تعمل، اكتب رقم هاتفك واطلب كود ربط فوري</div>
+
+              <div class="code-input-group">
+                <label for="pairingPhone">رقم هاتف الواتساب:</label>
+                <div class="input-row">
+                  <input type="tel" id="pairingPhone" class="input-phone" value="${defaultPhone}" placeholder="مثال: 01143264206" />
+                  <button id="btnRequestCode" onclick="fetchNewPairingCode()" class="btn-action">طلب كود 🔄</button>
+                </div>
+              </div>
+
+              <div id="codeDisplayArea" style="${pairingCode ? 'display:block' : 'display:none'}">
+                <div class="code-box">
+                  <div class="code-text" id="codeText">${pairingCode || '--------'}</div>
+                  <button id="btnCopy" onclick="copyPairingCode()" class="btn-copy">📋 نسخ الكود</button>
+                  <div class="countdown" id="countdownArea">⏳ الكود صالح لمدة: <span id="timerSeconds">60</span> ثانية</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="steps">
+              <strong>طريقة التفعيل بالكود:</strong>
+              <ol>
+                <li>في واتساب ➔ <b>الأجهزة المرتبطة</b> ➔ اضغط <b>ربط جهاز</b>.</li>
+                <li>اختر بالأسفل: <b>"الربط باستخدام رقم الهاتف بدلاً من ذلك"</b>.</li>
+                <li>اكتب الكود الظاهر هنا فوراً قبل انتهاء العداد.</li>
+              </ol>
+            </div>
+          </div>
         </div>
-      </body>
-      </html>
-    `);
-  } catch (err) {
-    res.status(500).send('خطأ أثناء إنشاء رمز QR');
-  }
+      </div>
+
+      <script>
+        let isConnected = false;
+        let countdownTimer = null;
+
+        // فحص دوري لحالة البوت
+        async function pollStatus() {
+          if (isConnected) return;
+          try {
+            const res = await fetch('/api/bot-status');
+            const data = await res.json();
+
+            if (data.status === 'connected') {
+              isConnected = true;
+              showConnectedScreen(data.botNumber);
+              return;
+            }
+
+            const badge = document.getElementById('statusBadge');
+            if (data.hasQr) {
+              badge.className = 'badge badge-ready';
+              badge.innerText = '🟢 جاهز للمسح أو طلب الكود';
+            }
+
+            if (data.pairingCode && !countdownTimer) {
+              showCode(data.pairingCode);
+            }
+          } catch (e) {}
+        }
+
+        // تحديث صورة الـ QR بشكل دوري وسلس
+        setInterval(() => {
+          if (!isConnected) {
+            const img = document.getElementById('qrImg');
+            if (img) img.src = '/qr/image?t=' + Date.now();
+          }
+        }, 15000);
+
+        setInterval(pollStatus, 2500);
+        pollStatus();
+
+        // طلب كود جديد
+        async function fetchNewPairingCode() {
+          const phoneInput = document.getElementById('pairingPhone');
+          const btn = document.getElementById('btnRequestCode');
+          const phone = phoneInput.value.trim();
+
+          if (!phone) {
+            alert('يرجى كتابة رقم الهاتف أولاً');
+            phoneInput.focus();
+            return;
+          }
+
+          btn.disabled = true;
+          btn.innerText = '⏳ جاري الطلب...';
+
+          try {
+            const res = await fetch('/api/request-pairing-code', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phone })
+            });
+            const data = await res.json();
+
+            if (data.success && data.code) {
+              showCode(data.code);
+              startTimer(60);
+            } else {
+              alert('⚠️ ' + (data.message || 'تعذر استخراج الكود، جرب مسح رمز QR فهو أضمن وأسرع!'));
+            }
+          } catch (err) {
+            alert('حدث خطأ أثناء الاتصال بالسيرفر. يفضل مسح الـ QR بالكاميرا');
+          } finally {
+            btn.disabled = false;
+            btn.innerText = 'طلب كود 🔄';
+          }
+        }
+
+        function showCode(code) {
+          document.getElementById('codeDisplayArea').style.display = 'block';
+          document.getElementById('codeText').innerText = code;
+        }
+
+        function startTimer(seconds) {
+          if (countdownTimer) clearInterval(countdownTimer);
+          let remaining = seconds;
+          const timerEl = document.getElementById('timerSeconds');
+          timerEl.innerText = remaining;
+
+          countdownTimer = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) {
+              clearInterval(countdownTimer);
+              countdownTimer = null;
+              timerEl.innerText = '0 (انتهت الصلاحية، اطلب كوداً جديداً)';
+            } else {
+              timerEl.innerText = remaining;
+            }
+          }, 1000);
+        }
+
+        function copyPairingCode() {
+          const code = document.getElementById('codeText').innerText.trim();
+          if (!code || code === '--------') return;
+          navigator.clipboard.writeText(code).then(() => {
+            const btn = document.getElementById('btnCopy');
+            btn.innerText = '✅ تم النسخ!';
+            setTimeout(() => { btn.innerText = '📋 نسخ الكود'; }, 2000);
+          });
+        }
+
+        function showConnectedScreen(botNumber) {
+          if (countdownTimer) clearInterval(countdownTimer);
+          document.getElementById('mainContainer').innerHTML = \`
+            <div class="success-box">
+              <div style="font-size: 70px; margin-bottom: 16px;">🎉</div>
+              <h2 style="color: #15803d; font-size: 28px; margin: 0 0 14px 0;">تم ربط البوت بواتساب بنجاح!</h2>
+              <p style="font-size: 18px; color: #374151; margin-bottom: 8px;">رقم البوت المتصل الآن: <b dir="ltr" style="color: #075e54; font-size: 20px;">+\${botNumber || 'نشط'}</b></p>
+              <p style="color: #6b7280; font-size: 15px; max-width: 500px; margin: 0 auto; line-height: 1.6;">
+                جلسة واتساب نشطة وتعمل 24 ساعة. البوت جاهز الآن للرد التلقائي واستقبال طلبات الدليفري وتوجيهها للمناديب.
+              </p>
+              <div style="margin-top: 28px;">
+                <a href="/admin" class="btn-success">🍔 فتح لوحة تحكم المطاعم والطلبات</a>
+              </div>
+            </div>
+          \`;
+        }
+      </script>
+    </body>
+    </html>
+  `);
 });
 
 // ============================================================================
@@ -1115,7 +1546,31 @@ async function startWhatsAppBot() {
     const { default: qrcodeTerminal } = await import('qrcode-terminal');
     const { handleCustomerMessage } = await import('./botHandler.js');
 
+    if (sock) {
+      try {
+        sock.ev.removeAllListeners();
+        sock.end();
+      } catch {}
+      sock = null;
+    }
+
+    // تنظيف أي جلسة سابقة غير مكتملة لمنع أخطاء تعذر الربط المتكررة
+    try {
+      const credsPath = path.join(SESSION_DIR, 'creds.json');
+      if (fs.existsSync(credsPath)) {
+        const raw = fs.readFileSync(credsPath, 'utf-8');
+        const creds = JSON.parse(raw);
+        if (creds && creds.registered === false) {
+          console.log('🧹 تنظيف محاولة ربط قديمة غير مكتملة (registered: false) للبدء بجلسة نقية 100%...');
+          fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+        }
+      }
+    } catch (e) {
+      console.log('ملاحظة أثناء فحص ملفات الجلسة:', e.message);
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+    currentAuthState = { state, saveCreds };
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
     console.log(`📡 إصدار Baileys: v${version.join('.')} (الأحدث: ${isLatest})`);
@@ -1124,11 +1579,11 @@ async function startWhatsAppBot() {
       version,
       auth: state,
       logger: pino({ level: 'silent' }),
-      printQRInTerminal: false,
-      browser: Browsers.ubuntu('Chrome'), // استخدام توقيع أوبونتو كروم القياسي الموثوق
+      printQRInTerminal: true,
+      browser: Browsers.windows('Chrome'), // استخدام توقيع ويندوز كروم القياسي الموثوق
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 25000
+      keepAliveIntervalMs: 10000
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -1147,9 +1602,9 @@ async function startWhatsAppBot() {
           qrcodeTerminal.generate(qr, { small: true });
         } catch {}
         console.log('\n' + '-'.repeat(55));
-        console.log('⏳ في انتظار مسح الـ QR أو الربط من هاتفك...');
+        console.log('⏳ في انتظار مسح الـ QR بالكاميرا أو طلب كود الربط من هاتفك...');
 
-        // طلب كود الربط المباشر برقم الهاتف فور جاهزية السوكيت
+        // طلب كود الربط المباشر برقم الهاتف فور جاهزية السوكيت إذا وُجد رقم
         const rawPhoneNumber = (BOT_PHONE_NUMBER || '').replace(/[^0-9]/g, '');
         if (rawPhoneNumber && !state.creds.registered && !pairingCode) {
           try {
@@ -1289,10 +1744,10 @@ if (!process.env.VERCEL) {
     console.log(`🌐 خادم Express يعمل على: http://localhost:${PORT}`);
     console.log(`📱 رابط صفحة الـ QR بالمتصفح: http://localhost:${PORT}/qr`);
     await initDB();
-    if (process.env.ENABLE_BAILEYS === 'true') {
+    if (process.env.ENABLE_BAILEYS !== 'false') {
       await startWhatsAppBot();
     } else {
-      console.log('🚀 تشغيل البوت عبر Meta WhatsApp Cloud API (Baileys معطل تلقائياً).');
+      console.log('🚀 تشغيل البوت عبر Meta WhatsApp Cloud API (Baileys معطل).');
     }
   });
 
