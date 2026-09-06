@@ -116,19 +116,13 @@ export function formatOrderSummaryMessage(category, parsedData, phone) {
     displayPhone = `+${cleanPhone}`;
   }
 
-  const detailsSummary = parsedData.location && parsedData.location !== 'طنطا'
-    ? `${parsedData.place_or_item} - اللوكيشن: ${parsedData.location}${notesLine}`
-    : `${parsedData.place_or_item}${notesLine}`;
-
   return `📋 ملخص طلبك يا فندم:
 - القسم: ${category}
-- التفاصيل: ${detailsSummary}
+- التفاصيل: ${parsedData.place_or_item}
+- اللوكيشن: ${parsedData.location}${notesLine}
 - رقم الموبايل: ${displayPhone}
 
-تحب نأكد الطلب ونبعت المندوب؟
-1. تأكيد الطلب
-2. تعديل
-(أرسل 1 للتأكيد أو 2 للتعديل)`;
+هل حابب تأكد الطلب ونبعت المندوب؟ (اكتب 1 للتأكيد، أو 2 للتعديل)`;
 }
 
 export default { parseOrderWithGemini, formatOrderSummaryMessage };

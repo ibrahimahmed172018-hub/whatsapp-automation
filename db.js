@@ -91,15 +91,9 @@ export const initDB = async () => {
           phone TEXT PRIMARY KEY,
           state TEXT NOT NULL DEFAULT 'IDLE',
           last_interaction DATETIME DEFAULT CURRENT_TIMESTAMP,
-          current_data TEXT DEFAULT '{}'
+          current_order_data TEXT DEFAULT '{}'
         )
       `);
-
-      // إضافة عمود current_data تلقائياً إن كان الجدول منشأ مسبقاً
-      try {
-        await run(`ALTER TABLE users ADD COLUMN current_data TEXT DEFAULT '{}'`);
-      } catch {}
-
 
       await run(`
         CREATE TABLE IF NOT EXISTS orders (
@@ -308,14 +302,13 @@ export const getUserState = async (phone) => {
     try {
       const { data, error } = await supabase.from('users').select('*').eq('phone', phone).maybeSingle();
       if (!error && data) {
-        let orderData = data.current_data ?? data.current_order_data;
+        let orderData = data.current_order_data;
         if (typeof orderData === 'string') {
           try { orderData = JSON.parse(orderData); } catch { orderData = {}; }
         }
         return {
           phone: data.phone,
           state: data.state,
-          current_data: orderData || {},
           current_order_data: orderData || {},
           last_interaction: data.last_interaction
         };
@@ -329,11 +322,8 @@ export const getUserState = async (phone) => {
           current_order_data: {},
           last_interaction: new Date().toISOString()
         };
-        try { await supabase.from('users').upsert(newUser); } catch {}
-        return {
-          ...newUser,
-          current_data: {}
-        };
+        await supabase.from('users').upsert(newUser);
+        return newUser;
       }
     } catch (err) {
       console.error('⚠️ خطأ في getUserState من Supabase:', err.message);
@@ -344,29 +334,26 @@ export const getUserState = async (phone) => {
   const user = await get(`SELECT * FROM users WHERE phone = ?`, [phone]);
   if (!user) {
     await run(
-      `INSERT INTO users (phone, state, current_data, last_interaction) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+      `INSERT INTO users (phone, state, current_order_data, last_interaction) VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
       [phone, CustomerState.IDLE, '{}']
     );
     return {
       phone,
       state: CustomerState.IDLE,
-      current_data: {},
       current_order_data: {},
       last_interaction: new Date().toISOString()
     };
   }
 
   let orderData = {};
-  const rawData = user.current_data ?? user.current_order_data ?? '{}';
   try {
-    orderData = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+    orderData = JSON.parse(user.current_order_data || '{}');
   } catch {
     orderData = {};
   }
 
   return {
     ...user,
-    current_data: orderData,
     current_order_data: orderData
   };
 };
@@ -377,7 +364,7 @@ export const setUserState = async (phone, state, data = null) => {
       let orderData = data;
       if (orderData === null) {
         const existing = await getUserState(phone);
-        orderData = existing.current_data ?? existing.current_order_data;
+        orderData = existing.current_order_data;
       }
 
       const payload = {
@@ -394,14 +381,13 @@ export const setUserState = async (phone, state, data = null) => {
         .single();
 
       if (!error && updated) {
-        let parsed = updated.current_data ?? updated.current_order_data;
+        let parsed = updated.current_order_data;
         if (typeof parsed === 'string') {
           try { parsed = JSON.parse(parsed); } catch { parsed = {}; }
         }
         return {
           phone: updated.phone,
           state: updated.state,
-          current_data: parsed || {},
           current_order_data: parsed || {},
           last_interaction: updated.last_interaction
         };
@@ -414,29 +400,17 @@ export const setUserState = async (phone, state, data = null) => {
   // Fallback SQLite
   const existing = await get(`SELECT * FROM users WHERE phone = ?`, [phone]);
   const serializedData =
-    data !== null ? JSON.stringify(data) : (existing?.current_data ?? existing?.current_order_data ?? '{}');
+    data !== null ? JSON.stringify(data) : existing?.current_order_data || '{}';
 
-  try {
-    await run(
-      `INSERT INTO users (phone, state, current_data, last_interaction)
-       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(phone) DO UPDATE SET
-         state = excluded.state,
-         current_data = excluded.current_data,
-         last_interaction = CURRENT_TIMESTAMP`,
-      [phone, state, serializedData]
-    );
-  } catch {
-    await run(
-      `INSERT INTO users (phone, state, current_order_data, last_interaction)
-       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(phone) DO UPDATE SET
-         state = excluded.state,
-         current_order_data = excluded.current_order_data,
-         last_interaction = CURRENT_TIMESTAMP`,
-      [phone, state, serializedData]
-    );
-  }
+  await run(
+    `INSERT INTO users (phone, state, current_order_data, last_interaction)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(phone) DO UPDATE SET
+       state = excluded.state,
+       current_order_data = excluded.current_order_data,
+       last_interaction = CURRENT_TIMESTAMP`,
+    [phone, state, serializedData]
+  );
 
   return getUserState(phone);
 };

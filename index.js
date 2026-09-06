@@ -150,32 +150,17 @@ app.post('/webhook', async (req, res) => {
         const messageType = message.type;
         const messageId = message.id;
 
-        let messageText = '';
-        if (messageType === 'text') {
-          messageText = message.text?.body || '';
-        } else if (messageType === 'interactive') {
-          // استخراج خيار القائمة التفاعلية (list_reply) أو الزر (button_reply)
-          messageText =
-            message.interactive?.list_reply?.id ||
-            message.interactive?.button_reply?.id ||
-            message.interactive?.list_reply?.title ||
-            '';
-        } else {
-          messageText = message.text?.body || '';
-        }
+        const messageText = messageType === 'text'
+          ? message.text.body
+          : `[رسالة من نوع: ${messageType}]`;
 
         console.log('\n=========================================');
         console.log(`📩 رسالة واردة جديدة عبر Meta Cloud API!`);
         console.log(`👤 المرسل: ${senderName} (+${senderPhone})`);
-        console.log(`💬 المحتوى: "${messageText}" [نوع: ${messageType}]`);
+        console.log(`💬 المحتوى: "${messageText}"`);
         console.log(`🆔 معرف الرسالة: ${messageId}`);
         console.log(`🕒 الوقت: ${new Date(parseInt(message.timestamp) * 1000).toLocaleTimeString('ar-EG')}`);
         console.log('=========================================\n');
-
-        if (messageText) {
-          const { handleCustomerMessage } = await import('./botHandler.js');
-          await handleCustomerMessage(senderPhone, messageText, null, `${senderPhone}@s.whatsapp.net`);
-        }
       }
 
       // ب. تتبع حالات تسليم الرسائل

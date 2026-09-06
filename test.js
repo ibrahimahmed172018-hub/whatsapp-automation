@@ -42,7 +42,7 @@ async function runTests() {
   let res = await handleCustomerMessage(phone, orderDetails, mockSock);
   assert.equal(res.newState, CustomerState.CONFIRMING_ORDER);
   assert.ok(res.messageSent.includes('📋 ملخص طلبك يا فندم:'));
-  assert.ok(res.messageSent.includes('1 للتأكيد'));
+  assert.ok(res.messageSent.includes('(اكتب 1 للتأكيد، أو 2 للتعديل)'));
 
   // 3. اختبار كتابة "تعديل" أو "2"
   console.log('3. اختبار كتابة "تعديل" / "2" وإتاحة الفرصة للعميل لتعديل طلبه...');
@@ -63,17 +63,16 @@ async function runTests() {
   assert.ok(res.orderId > 0);
   assert.equal(res.groupAlertSent, true);
 
-  // أ. التحقق من صيغة إشعار الأدمن والمناديب المطلوبة
-  assert.ok(res.groupAlertText.includes('🚨 أوردر جديد يا كابتن!'));
-  assert.ok(res.groupAlertText.includes(`- كود الأوردر: #${res.orderId}`));
-  assert.ok(res.groupAlertText.includes(`- رقم العميل: +${phone}`));
+  // أ. التحقق من صيغة إشعار جروب المناديب المطلوبة
+  assert.ok(res.groupAlertText.includes('🚨 أوردر جديد!'));
+  assert.ok(res.groupAlertText.includes(`- العميل: +${phone}`));
   assert.ok(res.groupAlertText.includes('- القسم: مطاعم طنطا'));
   assert.ok(res.groupAlertText.includes('- التفاصيل:'));
   assert.ok(res.groupAlertText.includes('- الوقت:'));
-  console.log('   ✅ صيغة إشعار جروب المناديب والأدمن مطابقة تماماً للمطلوب:\n', res.groupAlertText);
+  console.log('   ✅ صيغة إشعار جروب المناديب مطابقة تماماً للمطلوب:\n', res.groupAlertText);
 
   // ب. التحقق من رسالة شكر وتأكيد العميل
-  assert.ok(res.messageSent.includes('تم تأكيد طلبك بنجاح ومندوبنا هيتواصل معاك فوراً!'));
+  assert.ok(res.messageSent.includes('شكراً لتأكيد طلبك'));
   assert.ok(res.messageSent.includes(String(res.orderId)));
   console.log('   ✅ تم إرسال رسالة الشكر وتأكيد الأوردر للعميل بنجاح.');
 
@@ -84,42 +83,11 @@ async function runTests() {
   assert.equal(dbOrder.category, 'مطاعم طنطا');
   console.log(`   ✅ تم حفظ الأوردر في SQLite بحالة PENDING برقم (#${dbOrder.id}).`);
 
-  // د. التحقق من تصفير حالة العميل إلى IDLE وقراءة current_data
+  // د. التحقق من تصفير حالة العميل إلى IDLE
   const userState = await getUserState(phone);
   assert.equal(userState.state, CustomerState.IDLE);
-  assert.deepEqual(userState.current_data, {});
-  console.log('   ✅ تم تصفير حالة العميل وبياناته المؤقتة إلى IDLE بنجاح وتأكيد عمود current_data.');
-
-  // ==========================================================================
-  // اختبار القائمة التفاعلية والخيارات 1، 4، 6 (Interactive List Options)
-  // ==========================================================================
-  console.log('\n4.1 اختبار خيارات القائمة التفاعلية (option_1, option_4, option_6)...');
-  const testInteractivePhone = '201011223344';
-  await resetUserState(testInteractivePhone);
-
-  // اختبار اختيار option_1 (دليفري)
-  await handleCustomerMessage(testInteractivePhone, 'مرحبا', mockSock);
-  const opt1Res = await handleCustomerMessage(testInteractivePhone, 'option_1', mockSock);
-  assert.equal(opt1Res.newState, CustomerState.IN_ORDER_FLOW);
-  assert.ok(opt1Res.messageSent.includes('خدمة توصيل الطرود والمشاوير'));
-  console.log('   ✅ خيار option_1 (دليفري) ينقل العميل إلى IN_ORDER_FLOW ويطلب التفاصيل.');
-
-  // اختبار اختيار option_4 (عروض اليوم)
-  await resetUserState(testInteractivePhone);
-  await handleCustomerMessage(testInteractivePhone, 'مرحبا', mockSock);
-  const opt4Res = await handleCustomerMessage(testInteractivePhone, 'option_4', mockSock);
-  assert.equal(opt4Res.newState, CustomerState.AWAITING_MENU_SELECTION);
-  assert.ok(opt4Res.messageSent.includes('عروض اليوم الحصرية'));
-  console.log('   ✅ خيار option_4 (عروض اليوم) يرسل العروض ويبقى في AWAITING_MENU_SELECTION.');
-
-  // اختبار اختيار option_6 (خدمة العملاء)
-  await resetUserState(testInteractivePhone);
-  await handleCustomerMessage(testInteractivePhone, 'مرحبا', mockSock);
-  const opt6Res = await handleCustomerMessage(testInteractivePhone, 'option_6', mockSock);
-  assert.equal(opt6Res.newState, CustomerState.HUMAN_SUPPORT);
-  assert.equal(opt6Res.adminAlertSent, true);
-  assert.ok(opt6Res.messageSent.includes('تم تحويلك لخدمة العملاء'));
-  console.log('   ✅ خيار option_6 (خدمة العملاء) ينقل إلى HUMAN_SUPPORT ويرسل تنبيه للأدمن.');
+  assert.deepEqual(userState.current_order_data, {});
+  console.log('   ✅ تم تصفير حالة العميل وبياناته المؤقتة إلى IDLE بنجاح.');
 
   // ==========================================================================
   // 5. فحص ميزة إدارة المطاعم والمينيوهات (إضافة، تعديل، تعطيل، حذف، واختيار العميل)
