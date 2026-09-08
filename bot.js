@@ -114,19 +114,22 @@ async function updateUserState(userId, state, category = null, pending_details =
   );
 }
 
-// 3. أزرار القائمة الرئيسية (6 أزرار بعد إزالة عروض اليوم وإضافة صيدليات وأدوية طنطا)
+// 3. أزرار القائمة الرئيسية
 const MAIN_MENU_KEYBOARD = {
   inline_keyboard: [
     [
-      { text: '🛵 دليفري وطلبات خاصة', callback_data: 'cat_delivery' },
-      { text: '🍔 مطاعم طنطا', callback_data: 'cat_restaurants' }
+      { text: '🛴 اسكوتر توصيلة (مشاوير)', callback_data: 'cat_scooter' },
+      { text: '🛵 دليفري وطلبات خاصة', callback_data: 'cat_delivery' }
     ],
     [
-      { text: '🛒 تسوق من طنطا', callback_data: 'cat_shopping' },
-      { text: '💊 صيدليات وأدوية طنطا', callback_data: 'cat_pharmacy' }
+      { text: '🍔 مطاعم طنطا', callback_data: 'cat_restaurants' },
+      { text: '🛒 تسوق من طنطا', callback_data: 'cat_shopping' }
     ],
     [
-      { text: '🏪 محلات المنطقة', callback_data: 'cat_stores' },
+      { text: '💊 صيدليات وأدوية طنطا', callback_data: 'cat_pharmacy' },
+      { text: '🏪 محلات المنطقة', callback_data: 'cat_stores' }
+    ],
+    [
       { text: '📞 خدمة العملاء', callback_data: 'cat_support' }
     ]
   ]
@@ -168,6 +171,16 @@ async function answerCallback(callbackQueryId, text = null) {
 
 // معالجة اختيار الأقسام
 async function handleCategorySelection(chatId, userId, categoryKey) {
+  if (categoryKey === 'cat_scooter') {
+    await updateUserState(userId, 'WAITING_DETAILS', '🛴 اسكوتر توصيلة');
+    const msg = `🛴 <b>خدمة اسكوتر توصيلة (مشاوير طنطا السريعة 💨):</b>\nمشوارك أسرع وأوفر، زي أوبر بس على اسكوتر!\n\nمن فضلك اكتب:\n1️⃣ مكان الانطلاق (هتركب منين بالتحديد في طنطا؟)\n2️⃣ الوجهة (رايح فين؟)\n3️⃣ رقم التليفون للتواصل والتأكيد:`;
+    const keyboard = {
+      inline_keyboard: [[{ text: '🔙 إلغاء والعودة للقائمة', callback_data: 'back_to_menu' }]]
+    };
+    await sendMessage(chatId, msg, keyboard);
+    return;
+  }
+
   if (categoryKey === 'cat_pharmacy') {
     // 4. تفاصيل قسم الصيدليات
     await updateUserState(userId, 'WAITING_DETAILS', '💊 صيدليات وأدوية');
@@ -273,6 +286,10 @@ async function handleTextMessage(message) {
   }
 
   // دعم التعرف على نصوص الأزرار المكتوبة مباشرة
+  if (text.includes('اسكوتر') || text.includes('سكوتر') || text.includes('اوبر')) {
+    await handleCategorySelection(chatId, userId, 'cat_scooter');
+    return;
+  }
   if (text.includes('صيدلية') || text.includes('أدوية') || text.includes('ادوية')) {
     await handleCategorySelection(chatId, userId, 'cat_pharmacy');
     return;
@@ -439,9 +456,12 @@ async function handleCallbackQuery(callbackQuery) {
   if (data === 'edit_order') {
     const category = user.category || '💊 صيدليات وأدوية';
     await updateUserState(userId, 'WAITING_DETAILS', category);
-    const msg = category === '💊 صيدليات وأدوية'
-      ? '✏️ أعد كتابة اسم الصيدلية وقائمة الأدوية أو النواقص مع عنوان التوصيل ورقم التليفون:'
-      : '✏️ أعد كتابة تفاصيل الطلب مع العنوان ورقم التليفون بالتفصيل:';
+    let msg = '✏️ أعد كتابة تفاصيل الطلب مع العنوان ورقم التليفون بالتفصيل:';
+    if (category === '💊 صيدليات وأدوية') {
+      msg = '✏️ أعد كتابة اسم الصيدلية وقائمة الأدوية أو النواقص مع عنوان التوصيل ورقم التليفون:';
+    } else if (category === '🛴 اسكوتر توصيلة') {
+      msg = '✏️ أعد كتابة مكان الانطلاق والوجهة ورقم التليفون بالتفصيل:';
+    }
     const keyboard = {
       inline_keyboard: [[{ text: '🔙 إلغاء والعودة للقائمة', callback_data: 'back_to_menu' }]]
     };
