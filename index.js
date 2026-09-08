@@ -42,6 +42,13 @@ CREATE TABLE IF NOT EXISTS orders (
   status      TEXT    NOT NULL DEFAULT 'pending',
   created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS restaurants (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  name           TEXT    NOT NULL,
+  menu_image_id  TEXT    DEFAULT NULL,
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
 `);
 
 // Prepared Statements
@@ -73,6 +80,13 @@ const stmts = {
   countDelivering:   db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('accepted', 'delivering')"),
   countCompleted:    db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='completed'"),
   countCancelled:    db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='cancelled'"),
+
+  // Restaurants
+  insertRestaurant:  db.prepare('INSERT INTO restaurants (name, menu_image_id) VALUES (?, ?)'),
+  getRestaurants:    db.prepare('SELECT * FROM restaurants ORDER BY id ASC'),
+  getRestaurant:     db.prepare('SELECT * FROM restaurants WHERE id = ?'),
+  deleteRestaurant:  db.prepare('DELETE FROM restaurants WHERE id = ?'),
+  countRestaurants:   db.prepare('SELECT COUNT(*) as total FROM restaurants'),
 };
 
 // Categories & Status Configuration
@@ -127,8 +141,15 @@ const confirmKeyboard = Markup.inlineKeyboard([
 
 const adminKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('📦 آخر الطلبات والتحكم فيها', 'admin_orders')],
+  [Markup.button.callback('🍽️ إدارة المطاعم والمنيو',   'admin_restaurants')],
   [Markup.button.callback('📊 إحصائيات شاملة',           'admin_stats')],
   [Markup.button.callback('🚪 تسجيل الخروج',             'admin_logout')],
+]);
+
+const adminRestaurantsKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('➕ إضافة مطعم ومنيو جديد', 'admin_add_rest')],
+  [Markup.button.callback('📋 قائمة المطاعم الحالية', 'admin_list_rest')],
+  [Markup.button.callback('🔙 رجوع للوحة الإدارة',     'admin_panel_back')],
 ]);
 
 function getOrderActionKeyboard(orderId) {
@@ -207,6 +228,37 @@ bot.command(['id', 'myid'], async (ctx) => {
   await ctx.reply(`🆔 معرف حسابك (Chat ID): <code>${ctx.chat.id}</code>`, { parse_mode: 'HTML' });
 });
 
+// Photo Message Handler (Used when admin uploads a restaurant menu photo)
+bot.on('photo', async (ctx) => {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const user = ctx.dbUser || stmts.getUser.get(chatId);
+  if (!user) return;
+
+  if (user.state === 'ADMIN_ADD_REST_IMAGE') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح لك.');
+
+    // أفضل دقة للصورة تكون دائماً آخر عنصر في مصفوفة photo
+    const photoArray = ctx.message.photo;
+    const fileId = photoArray[photoArray.length - 1].file_id;
+    const restName = user.pending_details || 'مطعم جديد';
+
+    stmts.insertRestaurant.run(restName, fileId);
+    stmts.resetUser.run(chatId);
+
+    await ctx.reply(`✅ *تم بنجاح إضافة مطعم "${restName}" مع صورة المنيو الخاصة به!* 📸🍔\n\nأصبح متاحاً الآن في قسم المطاعم ليراه العملاء.`, {
+      parse_mode: 'Markdown',
+      ...adminRestaurantsKeyboard
+    });
+    return;
+  }
+
+  // إذا لم يكن في وضع إضافة المنيو
+  if (user.state === 'WAITING_DETAILS') {
+    return ctx.reply('⚠️ يرجى إرسال تفاصيل طلبك كتابةً بنص واضح.');
+  }
+});
+
 // Text Message Router
 bot.on('text', async (ctx) => {
   const chatId = ctx.chat?.id;
@@ -227,6 +279,35 @@ bot.on('text', async (ctx) => {
       '👋 أهلاً بك في *بوت دليفري طنطا*!\n\nاختر الخدمة التي تريدها:',
       { parse_mode: 'Markdown', ...mainMenuKeyboard }
     );
+  }
+
+  // معالجة خطوة إدخال اسم المطعم من الأدمن
+  if (user.state === 'ADMIN_ADD_REST_NAME') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    if (text.length > 100) {
+      return ctx.reply('⚠️ اسم المطعم طويل جداً، اكتب اسماً مختصراً.');
+    }
+    stmts.setPending.run(text, 'ADMIN_ADD_REST_IMAGE', chatId);
+    return ctx.reply(
+      `📸 ممتاز، اسم المطعم: *${text}*\n\nأرسل الآن *صورة المنيو* (أو اكتب "تخطي" إذا لم تتوفر صورة منيو حالياً):`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  // معالجة خطوة صورة المطعم إذا اختار الأدمن التخطي
+  if (user.state === 'ADMIN_ADD_REST_IMAGE') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    if (['تخطي', 'تخطي الصورة', 'skip', 'لا'].includes(lower)) {
+      const restName = user.pending_details || 'مطعم جديد';
+      stmts.insertRestaurant.run(restName, null);
+      stmts.resetUser.run(chatId);
+      return ctx.reply(`✅ *تمت إضافة مطعم "${restName}" بنجاح بدون صورة منيو.*`, {
+        parse_mode: 'Markdown',
+        ...adminRestaurantsKeyboard
+      });
+    } else {
+      return ctx.reply('📸 يرجى إرسال صورة المنيو أو كتابة كلمة "تخطي".');
+    }
   }
 
   // رفض رسائل طويلة جداً
@@ -279,7 +360,64 @@ bot.on('callback_query', async (ctx) => {
   const user = ctx.dbUser || stmts.getUser.get(chatId);
   if (!user) return;
 
-  // اختيار قسم
+  // --- قسم المطاعم المخصص (عرض المطاعم المسجلة من الأدمن مع المنيو) ---
+  if (data === 'cat_restaurants') {
+    const restaurants = stmts.getRestaurants.all();
+    if (restaurants.length > 0) {
+      // إظهار قائمة المطاعم كأزرار تفاعلية
+      const restButtons = restaurants.map(r => [
+        Markup.button.callback(`🍔 ${r.name}`, `select_rest:${r.id}`)
+      ]);
+      restButtons.push([Markup.button.callback('📝 طلب من مطعم آخر غير مسجل', 'rest_other')]);
+      restButtons.push([Markup.button.callback('🔙 العودة للقائمة الرئيسية', 'back_to_menu')]);
+
+      return ctx.reply(
+        '🍔 *مطاعم طنطا المتاحة:*\n\nاختر المطعم لعرض صورة المنيو الخاص به والطلب مباشرة، أو اختر مطعم آخر:',
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard(restButtons)
+        }
+      );
+    } else {
+      // لا توجد مطاعم مسجلة بعد -> المسار الافتراضي
+      stmts.setCategory.run('cat_restaurants', 'WAITING_DETAILS', chatId);
+      return ctx.reply(CATEGORY_PROMPTS.cat_restaurants, { parse_mode: 'Markdown' });
+    }
+  }
+
+  // العميل اختار مطعماً محدداً
+  if (data.startsWith('select_rest:')) {
+    const restId = Number(data.split(':')[1]);
+    const rest = stmts.getRestaurant.get(restId);
+    if (!rest) {
+      return ctx.reply('مطعم غير موجود، اختر مطعماً آخر.', mainMenuKeyboard);
+    }
+
+    stmts.setCategory.run(`cat_restaurants:${rest.name}`, 'WAITING_DETAILS', chatId);
+
+    const promptText = `🍔 *طلب من مطعم: ${rest.name}*\n\nاكتب تفاصيل طلبك كاملة:\n• الأصناف المطلوبة والكميات\n• عنوان التوصيل بالتفصيل\n• رقم للتواصل (اختياري)`;
+
+    if (rest.menu_image_id) {
+      // إرسال صورة المنيو المسجلة من الأدمن للعميل
+      return ctx.replyWithPhoto(rest.menu_image_id, {
+        caption: promptText,
+        parse_mode: 'Markdown'
+      }).catch(async () => {
+        // في حال تعذر إرسال الصورة كـ Photo
+        await ctx.reply(promptText, { parse_mode: 'Markdown' });
+      });
+    } else {
+      return ctx.reply(promptText, { parse_mode: 'Markdown' });
+    }
+  }
+
+  // العميل اختار مطعم آخر غير مسجل
+  if (data === 'rest_other') {
+    stmts.setCategory.run('cat_restaurants', 'WAITING_DETAILS', chatId);
+    return ctx.reply(CATEGORY_PROMPTS.cat_restaurants, { parse_mode: 'Markdown' });
+  }
+
+  // اختيار أي قسم آخر من الأقسام الخمسة
   if (data.startsWith('cat_')) {
     stmts.setCategory.run(data, 'WAITING_DETAILS', chatId);
     const prompt = CATEGORY_PROMPTS[data];
@@ -319,7 +457,7 @@ bot.on('callback_query', async (ctx) => {
   // تعديل
   if (data === 'edit') {
     stmts.setState.run('WAITING_DETAILS', chatId);
-    const label = CATEGORY_LABELS[user.selected_category] || '';
+    const label = CATEGORY_LABELS[user.selected_category] || user.selected_category || '';
     return ctx.reply(`✏️ أعد إدخال تفاصيل طلبك (القسم: ${label}):`);
   }
 
@@ -329,7 +467,13 @@ bot.on('callback_query', async (ctx) => {
     return ctx.reply('❌ تم إلغاء الطلب.', mainMenuKeyboard);
   }
 
-  // لوحة الإدارة: تغيير حالة الطلب مع إشعار فوري للعميل
+  // رجوع للقائمة
+  if (data === 'back_to_menu') {
+    stmts.resetUser.run(chatId);
+    return ctx.reply('👋 القائمة الرئيسية:', mainMenuKeyboard);
+  }
+
+  // --- لوحة الإدارة: تغيير حالة الطلب مع إشعار فوري للعميل ---
   if (data.startsWith('set_status:')) {
     if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح لك.');
 
@@ -366,7 +510,70 @@ bot.on('callback_query', async (ctx) => {
     return;
   }
 
-  // لوحة الإدارة: عرض آخر الطلبات مع أزرار التحكم
+  // --- لوحة الإدارة: إدارة المطاعم والمنيو ---
+  if (data === 'admin_restaurants') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    const count = stmts.countRestaurants.get().total;
+    return ctx.reply(
+      `🍽️ *إدارة المطاعم والمنيو:*\n\nعدد المطاعم المسجلة حالياً: *${count}* مطعم.\nاختر الإجراء الذي تريده:`,
+      {
+        parse_mode: 'Markdown',
+        ...adminRestaurantsKeyboard
+      }
+    );
+  }
+
+  if (data === 'admin_add_rest') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    stmts.setState.run('ADMIN_ADD_REST_NAME', chatId);
+    return ctx.reply('📝 *أدخل اسم المطعم الجديد:*\n(مثال: كريب لافير، كرم الشام، بازوكا...)', { parse_mode: 'Markdown' });
+  }
+
+  if (data === 'admin_list_rest') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    const rests = stmts.getRestaurants.all();
+    if (!rests.length) {
+      return ctx.reply('لا توجد مطاعم مسجلة بعد. اضغط "إضافة مطعم" لإضافة أول مطعم.', adminRestaurantsKeyboard);
+    }
+
+    await ctx.reply(`📋 *المطاعم المسجلة (${rests.length}):*`, { parse_mode: 'Markdown' });
+
+    for (const r of rests) {
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback(`❌ حذف مطعم ${r.name}`, `del_rest:${r.id}`)]
+      ]);
+
+      if (r.menu_image_id) {
+        await ctx.replyWithPhoto(r.menu_image_id, {
+          caption: `🍽️ *${r.name}*\n📸 صورة المنيو مرفقة أعلاه.`,
+          parse_mode: 'Markdown',
+          ...keyboard
+        }).catch(() => {});
+      } else {
+        await ctx.reply(`🍽️ *${r.name}* (بدون صورة منيو)`, {
+          parse_mode: 'Markdown',
+          ...keyboard
+        });
+      }
+    }
+    return;
+  }
+
+  if (data.startsWith('del_rest:')) {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    const restId = Number(data.split(':')[1]);
+    stmts.deleteRestaurant.run(restId);
+    await ctx.answerCbQuery('تم حذف المطعم بنجاح.').catch(() => {});
+    return ctx.reply('🗑️ تم حذف المطعم بنجاح من القائمة.', adminRestaurantsKeyboard);
+  }
+
+  if (data === 'admin_panel_back') {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
+    stmts.setState.run('ADMIN_PANEL', chatId);
+    return ctx.reply('👑 لوحة تحكم الإدارة:', adminKeyboard);
+  }
+
+  // --- لوحة الإدارة: عرض آخر الطلبات مع أزرار التحكم ---
   if (data === 'admin_orders') {
     if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
     const orders = stmts.lastOrders.all();
@@ -389,11 +596,12 @@ bot.on('callback_query', async (ctx) => {
     return;
   }
 
-  // لوحة الإدارة: الإحصائيات الشاملة
+  // --- لوحة الإدارة: الإحصائيات الشاملة ---
   if (data === 'admin_stats') {
     if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
     const totalOrders = stmts.countOrders.get().total;
     const totalUsers  = stmts.countUsers.get().total;
+    const totalRests  = stmts.countRestaurants.get().total;
     const pending     = stmts.countPending.get().total;
     const delivering  = stmts.countDelivering.get().total;
     const completed   = stmts.countCompleted.get().total;
@@ -402,6 +610,7 @@ bot.on('callback_query', async (ctx) => {
     const statsMsg = `📊 *إحصائيات بوت دليفري طنطا:*
 ━━━━━━━━━━━━━━━━━
 👥 إجمالي العملاء المسجلين: ${totalUsers}
+🍽️ إجمالي المطاعم المضافة: ${totalRests}
 📦 إجمالي كافة الطلبات: ${totalOrders}
 ─────────────────
 ⏳ طلبات قيد الانتظار: ${pending}
@@ -412,7 +621,7 @@ bot.on('callback_query', async (ctx) => {
     return ctx.reply(statsMsg, { parse_mode: 'Markdown', ...adminKeyboard });
   }
 
-  // لوحة الإدارة: تسجيل الخروج
+  // --- لوحة الإدارة: تسجيل الخروج ---
   if (data === 'admin_logout') {
     stmts.setAdmin.run(0, chatId);
     stmts.setState.run('IDLE', chatId);
