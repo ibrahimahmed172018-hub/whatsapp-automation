@@ -533,36 +533,41 @@ async function startPolling() {
 
 // بدء التشغيل
 async function main() {
-  try {
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🤖 جاري التحقق من اتصال بوت دليفري طنطا...');
-    const meRes = await tg.get('/getMe');
-    const botInfo = meRes.data.result;
-    console.log(`✅ البوت متصل بنجاح: @${botInfo.username} (${botInfo.first_name})`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('🤖 جاري التحقق من اتصال بوت دليفري طنطا...');
 
-    // حذف أي Webhook نشط لضمان عمل getUpdates بسلاسة
-    await tg.post('/deleteWebhook', { drop_pending_updates: false });
+  // تشغيل سيرفر HTTP لفحص الحالة لتوافق Render و Railway
+  const PORT = process.env.PORT || 3000;
+  http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية!');
+  }).listen(PORT, () => {
+    console.log(`🌐 سيرفر فحص الحالة يعمل بنجاح على المنفذ: ${PORT}`);
+  });
 
-    // تهيئة قاعدة بيانات SQLite
-    await initDatabase();
+  // تهيئة قاعدة بيانات SQLite
+  await initDatabase();
 
-    // تشغيل سيرفر HTTP لفحص الحالة لتوافق Render و Railway
-    const PORT = process.env.PORT || 3000;
-    http.createServer((req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية!');
-    }).listen(PORT, () => {
-      console.log(`🌐 سيرفر فحص الحالة يعمل بنجاح على المنفذ: ${PORT}`);
-    });
+  let connected = false;
+  while (!connected) {
+    try {
+      const meRes = await tg.get('/getMe');
+      const botInfo = meRes.data.result;
+      console.log(`✅ البوت متصل بنجاح: @${botInfo.username} (${botInfo.first_name})`);
 
-    // بدء الاستماع
-    console.log('🛵 بوت دليفري طنطا جاهز وشغال الآن لاستقبال الطلبات!');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    await startPolling();
-  } catch (err) {
-    console.error('❌ فشل تشغيل البوت:', err?.message || err);
-    process.exit(1);
+      // حذف أي Webhook نشط لضمان عمل getUpdates بسلاسة
+      await tg.post('/deleteWebhook', { drop_pending_updates: false });
+      connected = true;
+    } catch (err) {
+      console.warn('⚠️ تعذر الاتصال الأولي بتيليجرام، جاري إعادة المحاولة خلال 3 ثوانٍ...', err?.message || err);
+      await new Promise((r) => setTimeout(r, 3000));
+    }
   }
+
+  // بدء الاستماع
+  console.log('🛵 بوت دليفري طنطا جاهز وشغال الآن لاستقبال الطلبات!');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  await startPolling();
 }
 
 // إيقاف آمن
