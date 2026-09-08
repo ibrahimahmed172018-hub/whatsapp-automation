@@ -1,6 +1,7 @@
 import sqlite3 from 'sqlite3';
 import axios from 'axios';
 import https from 'node:https';
+import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -544,6 +545,15 @@ async function main() {
 
     // تهيئة قاعدة بيانات SQLite
     await initDatabase();
+
+    // تشغيل سيرفر HTTP لفحص الحالة لتوافق Render و Railway
+    const PORT = process.env.PORT || 3000;
+    http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية!');
+    }).listen(PORT, () => {
+      console.log(`🌐 سيرفر فحص الحالة يعمل بنجاح على المنفذ: ${PORT}`);
+    });
 
     // بدء الاستماع
     console.log('🛵 بوت دليفري طنطا جاهز وشغال الآن لاستقبال الطلبات!');
