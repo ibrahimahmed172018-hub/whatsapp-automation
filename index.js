@@ -13,9 +13,12 @@ const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية!');
 });
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 سيرفر فحص الحالة يعمل بنجاح على المنفذ: ${PORT}`);
-});
+
+if (require.main === module) {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 سيرفر فحص الحالة يعمل بنجاح على المنفذ: ${PORT}`);
+  });
+}
 
 // Database Initialization
 const db = new Database(DB_PATH);
@@ -43,30 +46,51 @@ CREATE TABLE IF NOT EXISTS orders (
 
 // Prepared Statements
 const stmts = {
-  getUser:     db.prepare('SELECT * FROM users WHERE chat_id = ?'),
-  upsertUser:  db.prepare(`
+  getUser:           db.prepare('SELECT * FROM users WHERE chat_id = ?'),
+  upsertUser:        db.prepare(`
     INSERT INTO users (chat_id, state) VALUES (?, 'IDLE')
     ON CONFLICT(chat_id) DO NOTHING
   `),
-  setState:    db.prepare('UPDATE users SET state = ? WHERE chat_id = ?'),
-  setCategory: db.prepare('UPDATE users SET selected_category = ?, state = ? WHERE chat_id = ?'),
-  setPending:  db.prepare('UPDATE users SET pending_details = ?, state = ? WHERE chat_id = ?'),
-  resetUser:   db.prepare(`
+  setState:          db.prepare('UPDATE users SET state = ? WHERE chat_id = ?'),
+  setCategory:       db.prepare('UPDATE users SET selected_category = ?, state = ? WHERE chat_id = ?'),
+  setPending:        db.prepare('UPDATE users SET pending_details = ?, state = ? WHERE chat_id = ?'),
+  resetUser:         db.prepare(`
     UPDATE users SET state='IDLE', selected_category=NULL, pending_details=NULL
     WHERE chat_id = ?
   `),
-  setAdmin:    db.prepare('UPDATE users SET is_admin = ? WHERE chat_id = ?'),
-  insertOrder: db.prepare(`
-    INSERT INTO orders (chat_id, username, category, details)
-    VALUES (?, ?, ?, ?)
+  setAdmin:          db.prepare('UPDATE users SET is_admin = ? WHERE chat_id = ?'),
+  getAdmins:         db.prepare('SELECT chat_id FROM users WHERE is_admin = 1'),
+  insertOrder:       db.prepare(`
+    INSERT INTO orders (chat_id, username, category, details, status)
+    VALUES (?, ?, ?, ?, 'pending')
   `),
-  getAdmins:   db.prepare('SELECT chat_id FROM users WHERE is_admin = 1'),
-  lastOrders:  db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
-  countOrders: db.prepare('SELECT COUNT(*) as total FROM orders'),
-  countPending:db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='pending'"),
+  getOrder:          db.prepare('SELECT * FROM orders WHERE id = ?'),
+  updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
+  lastOrders:        db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
+  countOrders:       db.prepare('SELECT COUNT(*) as total FROM orders'),
+  countUsers:        db.prepare('SELECT COUNT(*) as total FROM users'),
+  countPending:      db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='pending'"),
+  countDelivering:   db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('accepted', 'delivering')"),
+  countCompleted:    db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='completed'"),
+  countCancelled:    db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='cancelled'"),
 };
 
-// Keyboards and Prompts
+// Categories & Status Configuration
+const STATUS_LABELS = {
+  pending:    '⏳ قيد الانتظار',
+  accepted:   '🛵 مقبول وجاري التجهيز',
+  delivering: '🚀 جاري التوصيل مع المندوب',
+  completed:  '✅ تم التسليم بنجاح',
+  cancelled:  '❌ ملغي / اعتذار'
+};
+
+const CUSTOMER_STATUS_NOTIFICATIONS = {
+  accepted:   (id) => `🛵 *تحديث بخصوص طلبك #${id}:*\nتم قبول طلبك وجاري تجهيزه حالياً من قبل المندوب! 💨`,
+  delivering: (id) => `🚀 *تحديث بخصوص طلبك #${id}:*\nالمندوب استلم طلبك وهو في الطريق إليك الآن! 🛵💨`,
+  completed:  (id) => `🎉 *تم تسليم طلبك #${id} بنجاح!*\nشكراً لتعاملك معنا في دليفري طنطا، نسعد بخدمتك دائماً! 🙏❤️`,
+  cancelled:  (id) => `❌ *نعتذر منك بخصوص طلبك #${id}:*\nتم إلغاء الطلب حالياً. للتفاصيل أو المساعدة تواصل معنا عبر خدمة العملاء.`
+};
+
 const CATEGORY_PROMPTS = {
   cat_delivery:     '🛵 *دليفري وطلبات خاصة*\n\nاكتب تفاصيل طلبك كاملة:\n• العنوان (من أين؟ إلى أين؟)\n• وصف ما تريد إحضاره\n• أي ملاحظات إضافية',
   cat_restaurants:  '🍔 *مطاعم طنطا*\n\nاكتب طلبك:\n• اسم المطعم (لو عندك تفضيل)\n• الأصناف المطلوبة\n• عنوان التوصيل',
@@ -85,6 +109,7 @@ const CATEGORY_LABELS = {
   cat_support:     '📞 خدمة العملاء',
 };
 
+// Keyboards
 const mainMenuKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('🛵 دليفري وطلبات خاصة', 'cat_delivery')],
   [Markup.button.callback('🍔 مطاعم طنطا',          'cat_restaurants')],
@@ -101,23 +126,40 @@ const confirmKeyboard = Markup.inlineKeyboard([
 ]);
 
 const adminKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback('📦 آخر 10 طلبات',  'admin_orders')],
-  [Markup.button.callback('📊 إحصائيات',       'admin_stats')],
-  [Markup.button.callback('🚪 تسجيل الخروج',   'admin_logout')],
+  [Markup.button.callback('📦 آخر الطلبات والتحكم فيها', 'admin_orders')],
+  [Markup.button.callback('📊 إحصائيات شاملة',           'admin_stats')],
+  [Markup.button.callback('🚪 تسجيل الخروج',             'admin_logout')],
 ]);
+
+function getOrderActionKeyboard(orderId) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('🛵 قبول وتجهيز', `set_status:${orderId}:accepted`),
+      Markup.button.callback('🚀 جاري التوصيل', `set_status:${orderId}:delivering`)
+    ],
+    [
+      Markup.button.callback('✅ تم التسليم', `set_status:${orderId}:completed`),
+      Markup.button.callback('❌ إلغاء واعتذار', `set_status:${orderId}:cancelled`)
+    ]
+  ]);
+}
 
 // Helper: Notify Admins
 function notifyAdmins(botInstance, order) {
   const admins = stmts.getAdmins.all();
   const msg = `🔔 *طلب جديد #${order.id}*\n\n`
     + `📂 القسم: ${CATEGORY_LABELS[order.category] || order.category}\n`
-    + `👤 العميل: @${order.username || 'بدون يوزر'} (${order.chat_id})\n`
+    + `👤 العميل: @${order.username || 'بدون يوزر'} (ID: \`${order.chat_id}\`)\n`
     + `📝 التفاصيل:\n${order.details}\n`
-    + `📅 ${order.created_at}`;
+    + `📅 ${order.created_at}\n`
+    + `📊 الحالة: ${STATUS_LABELS.pending}\n\n`
+    + `👇 اضغط للتحكم في حالة الطلب وإرسال إشعار فوري للعميل:`;
 
   for (const admin of admins) {
-    botInstance.telegram.sendMessage(admin.chat_id, msg, { parse_mode: 'Markdown' })
-      .catch(() => {});
+    botInstance.telegram.sendMessage(admin.chat_id, msg, {
+      parse_mode: 'Markdown',
+      ...getOrderActionKeyboard(order.id)
+    }).catch(() => {});
   }
 }
 
@@ -140,7 +182,7 @@ async function triggerAdminAuth(ctx) {
   const user = ctx.dbUser || stmts.getUser.get(chatId);
   if (user && user.is_admin === 1) {
     stmts.setState.run('ADMIN_PANEL', chatId);
-    return ctx.reply('👑 مرحباً في لوحة الإدارة:', adminKeyboard);
+    return ctx.reply('👑 مرحباً في لوحة تحكم الإدارة والمناديب:', adminKeyboard);
   }
   stmts.setState.run('ADMIN_AUTH', chatId);
   await ctx.reply('🔐 أدخل كلمة مرور الإدارة:');
@@ -174,7 +216,7 @@ bot.on('text', async (ctx) => {
   const user = ctx.dbUser || stmts.getUser.get(chatId);
   if (!user) return;
 
-  // حماية: دعم نصوص الأوامر المكتوبة بدون سلاش
+  // دعم نصوص الأوامر المكتوبة بدون سلاش
   if (['/admin', 'admin', 'ادمن', 'الادمن', 'الأدمن', '/ادمن'].includes(lower)) {
     return triggerAdminAuth(ctx);
   }
@@ -212,7 +254,7 @@ bot.on('text', async (ctx) => {
       if (text === ADMIN_PASS) {
         stmts.setAdmin.run(1, chatId);
         stmts.setState.run('ADMIN_PANEL', chatId);
-        return ctx.reply('✅ تم تسجيل الدخول كمدير!\n\n👑 لوحة الإدارة:', adminKeyboard);
+        return ctx.reply('✅ تم تسجيل الدخول كمدير بنجاح!\n\n👑 لوحة الإدارة:', adminKeyboard);
       } else {
         stmts.setState.run('IDLE', chatId);
         return ctx.reply('❌ كلمة مرور خاطئة.');
@@ -261,7 +303,7 @@ bot.on('callback_query', async (ctx) => {
 
     await ctx.reply(`✅ *تم تأكيد طلبك بنجاح!*\n\n🔖 رقم طلبك: *#${orderId}*\n\nسيتواصل معك فريقنا قريباً. شكراً! 🙏`, { parse_mode: 'Markdown' });
 
-    // إشعار الأدمن
+    // إشعار الأدمن والمناديب مع أزرار التحكم الفورية
     const order = {
       id: orderId,
       chat_id: chatId,
@@ -287,32 +329,94 @@ bot.on('callback_query', async (ctx) => {
     return ctx.reply('❌ تم إلغاء الطلب.', mainMenuKeyboard);
   }
 
-  // لوحة الإدارة: عرض الطلبات
+  // لوحة الإدارة: تغيير حالة الطلب مع إشعار فوري للعميل
+  if (data.startsWith('set_status:')) {
+    if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح لك.');
+
+    const [, orderIdStr, newStatus] = data.split(':');
+    const orderId = Number(orderIdStr);
+    const order = stmts.getOrder.get(orderId);
+
+    if (!order) {
+      return ctx.reply('⚠️ لم يتم العثور على هذا الطلب.');
+    }
+
+    stmts.updateOrderStatus.run(newStatus, orderId);
+    const statusLabel = STATUS_LABELS[newStatus] || newStatus;
+
+    await ctx.answerCbQuery(`تم تحديث الطلب #${orderId} إلى: ${statusLabel}`).catch(() => {});
+
+    // تعديل نص رسالة الأدمن لتأكيد التحديث
+    const originalText = ctx.callbackQuery.message?.text || '';
+    const cleanText = originalText.split('\n━━━━━━━━━━━━━━━━━\n🔄')[0];
+    await ctx.editMessageText(
+      `${cleanText}\n━━━━━━━━━━━━━━━━━\n🔄 *تم التحديث بواسطة الأدمن:* ${statusLabel}`,
+      {
+        parse_mode: 'Markdown',
+        ...getOrderActionKeyboard(orderId)
+      }
+    ).catch(() => {});
+
+    // إرسال إشعار فوري للعميل صاحب الطلب
+    const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
+    if (notifyFn && order.chat_id) {
+      bot.telegram.sendMessage(order.chat_id, notifyFn(orderId), { parse_mode: 'Markdown' })
+        .catch((err) => console.error(`فشل إرسال إشعار للعميل ${order.chat_id}:`, err.message));
+    }
+    return;
+  }
+
+  // لوحة الإدارة: عرض آخر الطلبات مع أزرار التحكم
   if (data === 'admin_orders') {
     if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
     const orders = stmts.lastOrders.all();
-    if (!orders.length) return ctx.reply('لا توجد طلبات بعد.');
-    const lines = orders.map(o =>
-      `🔖 #${o.id} | ${CATEGORY_LABELS[o.category] || o.category}\n`
-      + `👤 @${o.username || 'بدون يوزر'} | 📅 ${o.created_at}\n`
-      + `📝 ${o.details.substring(0, 100)}${o.details.length > 100 ? '...' : ''}`
-    );
-    return ctx.reply(`📦 *آخر 10 طلبات:*\n━━━━━━━━━━━━━━━━\n${lines.join('\n─────────────────\n')}`, { parse_mode: 'Markdown' });
+    if (!orders.length) return ctx.reply('لا توجد طلبات مسجلة بعد.');
+
+    await ctx.reply(`📦 *عرض آخر 5 طلبات مع إمكانية تغيير الحالة:*\n━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown' });
+
+    for (const o of orders.slice(0, 5)) {
+      const orderCard = `🔖 *طلب #${o.id}* | ${CATEGORY_LABELS[o.category] || o.category}\n`
+        + `👤 العميل: @${o.username || 'بدون يوزر'} (ID: \`${o.chat_id}\`)\n`
+        + `📅 ${o.created_at}\n`
+        + `📊 الحالة الحالية: *${STATUS_LABELS[o.status] || o.status}*\n`
+        + `📝 ${o.details}`;
+
+      await ctx.reply(orderCard, {
+        parse_mode: 'Markdown',
+        ...getOrderActionKeyboard(o.id)
+      }).catch(() => {});
+    }
+    return;
   }
 
-  // لوحة الإدارة: الإحصائيات
+  // لوحة الإدارة: الإحصائيات الشاملة
   if (data === 'admin_stats') {
     if (user.is_admin !== 1) return ctx.reply('⛔ غير مصرح.');
-    const total = stmts.countOrders.get().total;
-    const pending = stmts.countPending.get().total;
-    return ctx.reply(`📊 *إحصائيات البوت:*\n━━━━━━━━━━━━━━━━━\n📦 إجمالي الطلبات: ${total}\n⏳ طلبات معلقة: ${pending}`, { parse_mode: 'Markdown' });
+    const totalOrders = stmts.countOrders.get().total;
+    const totalUsers  = stmts.countUsers.get().total;
+    const pending     = stmts.countPending.get().total;
+    const delivering  = stmts.countDelivering.get().total;
+    const completed   = stmts.countCompleted.get().total;
+    const cancelled   = stmts.countCancelled.get().total;
+
+    const statsMsg = `📊 *إحصائيات بوت دليفري طنطا:*
+━━━━━━━━━━━━━━━━━
+👥 إجمالي العملاء المسجلين: ${totalUsers}
+📦 إجمالي كافة الطلبات: ${totalOrders}
+─────────────────
+⏳ طلبات قيد الانتظار: ${pending}
+🛵 طلبات جاري توصيلها: ${delivering}
+✅ طلبات تم تسليمها بنجاح: ${completed}
+❌ طلبات ملغاة: ${cancelled}`;
+
+    return ctx.reply(statsMsg, { parse_mode: 'Markdown', ...adminKeyboard });
   }
 
   // لوحة الإدارة: تسجيل الخروج
   if (data === 'admin_logout') {
     stmts.setAdmin.run(0, chatId);
     stmts.setState.run('IDLE', chatId);
-    return ctx.reply('🚪 تم تسجيل الخروج.', mainMenuKeyboard);
+    return ctx.reply('🚪 تم تسجيل الخروج بنجاح.', mainMenuKeyboard);
   }
 
   // Fallback
@@ -346,4 +450,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { bot, db, stmts, CATEGORY_LABELS, CATEGORY_PROMPTS };
+module.exports = { bot, db, stmts, CATEGORY_LABELS, CATEGORY_PROMPTS, STATUS_LABELS };
