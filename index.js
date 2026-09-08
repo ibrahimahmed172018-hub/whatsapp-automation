@@ -1,3 +1,4 @@
+const http = require('http');
 const { Telegraf, Markup } = require('telegraf');
 const Database = require('better-sqlite3');
 
@@ -5,6 +6,16 @@ const Database = require('better-sqlite3');
 const BOT_TOKEN  = process.env.BOT_TOKEN || '8682760460:AAFyWu23L9CMLHHn656wA74b32kyVQX-rx4';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123';
 const DB_PATH    = process.env.DB_PATH || './delivery_bot.db';
+const PORT       = process.env.PORT || 3000;
+
+// HTTP Health Check Server (Required for Render Web Services & Cloud Deployments)
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية!');
+});
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 سيرفر فحص الحالة يعمل بنجاح على المنفذ: ${PORT}`);
+});
 
 // Database Initialization
 const db = new Database(DB_PATH);
@@ -122,8 +133,21 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
-// Command: /start
-bot.command('start', async (ctx) => {
+// Admin handler logic
+async function triggerAdminAuth(ctx) {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+  const user = ctx.dbUser || stmts.getUser.get(chatId);
+  if (user && user.is_admin === 1) {
+    stmts.setState.run('ADMIN_PANEL', chatId);
+    return ctx.reply('👑 مرحباً في لوحة الإدارة:', adminKeyboard);
+  }
+  stmts.setState.run('ADMIN_AUTH', chatId);
+  await ctx.reply('🔐 أدخل كلمة مرور الإدارة:');
+}
+
+// Command: /start & /menu
+bot.command(['start', 'menu'], async (ctx) => {
   stmts.resetUser.run(ctx.chat.id);
   await ctx.reply(
     '👋 أهلاً بك في *بوت دليفري طنطا*!\n\nاختر الخدمة التي تريدها:',
@@ -131,15 +155,14 @@ bot.command('start', async (ctx) => {
   );
 });
 
-// Command: /admin
-bot.command('admin', async (ctx) => {
-  const user = ctx.dbUser;
-  if (user && user.is_admin === 1) {
-    stmts.setState.run('ADMIN_PANEL', ctx.chat.id);
-    return ctx.reply('👑 مرحباً في لوحة الإدارة:', adminKeyboard);
-  }
-  stmts.setState.run('ADMIN_AUTH', ctx.chat.id);
-  await ctx.reply('🔐 أدخل كلمة مرور الإدارة:');
+// Command: /admin & /ادمن
+bot.command(['admin', 'ادمن'], async (ctx) => {
+  await triggerAdminAuth(ctx);
+});
+
+// Command: /id
+bot.command(['id', 'myid'], async (ctx) => {
+  await ctx.reply(`🆔 معرف حسابك (Chat ID): <code>${ctx.chat.id}</code>`, { parse_mode: 'HTML' });
 });
 
 // Text Message Router
@@ -147,10 +170,24 @@ bot.on('text', async (ctx) => {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
   const text = ctx.message.text.trim();
+  const lower = text.toLowerCase();
   const user = ctx.dbUser || stmts.getUser.get(chatId);
   if (!user) return;
 
-  // حماية: رفض رسائل طويلة جداً
+  // حماية: دعم نصوص الأوامر المكتوبة بدون سلاش
+  if (['/admin', 'admin', 'ادمن', 'الادمن', 'الأدمن', '/ادمن'].includes(lower)) {
+    return triggerAdminAuth(ctx);
+  }
+
+  if (['/start', 'start', 'ابدأ', 'ابدا', 'القائمة', 'menu'].includes(lower)) {
+    stmts.resetUser.run(chatId);
+    return ctx.reply(
+      '👋 أهلاً بك في *بوت دليفري طنطا*!\n\nاختر الخدمة التي تريدها:',
+      { parse_mode: 'Markdown', ...mainMenuKeyboard }
+    );
+  }
+
+  // رفض رسائل طويلة جداً
   if (text.length > 1000) {
     return ctx.reply('⚠️ التفاصيل طويلة جداً (الحد 1000 حرف)، يرجى التلخيص.');
   }
@@ -299,8 +336,14 @@ if (require.main === module) {
       console.error('Failed to launch bot:', err);
     });
 
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+  process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    server.close();
+  });
+  process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    server.close();
+  });
 }
 
 module.exports = { bot, db, stmts, CATEGORY_LABELS, CATEGORY_PROMPTS };
