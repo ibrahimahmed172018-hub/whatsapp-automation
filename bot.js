@@ -16,9 +16,9 @@ const tg = axios.create({
   timeout: 60000
 });
 
-// بيانات الأدمن لاستقبال إشعارات الطلبات الفورية
-const ADMIN_PHONE = '01143264206';
-const ADMIN_CHAT_ID = '8257935481'; // حساب إبراهيم أحمد المرتبط برقم 01143264206
+// بيانات المندوب الأساسي لاستقبال كافة إشعارات وطلبات البوت فوراً
+const PRIMARY_DRIVER_PHONE = '01143264206';
+const PRIMARY_DRIVER_CHAT_ID = '8257935481'; // حساب التيليجرام للمندوب الأساسي (01143264206)
 
 // 2. إعداد قاعدة بيانات SQLite (delivery_bot.db)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -236,7 +236,7 @@ async function handleCategorySelection(chatId, userId, categoryKey) {
 
   if (categoryKey === 'cat_support') {
     await updateUserState(userId, 'IDLE');
-    const msg = `📞 <b>خدمة العملاء والدعم الفني:</b>\n\nنسعد دائماً بخدمتكم في دليفري طنطا 🛵\nللتواصل المباشر والاستفسارات:\n📱 هاتف / واتساب: <code>01143264206</code>\n\nأو أرسل رسالتك هنا وسيقوم أحد ممثلي الخدمة بالرد عليك فوراً!`;
+    const msg = `📞 <b>خدمة العملاء والتواصل مع المندوب الأساسي:</b>\n\nنسعد دائماً بخدمتكم في دليفري طنطا 🛵\nللتواصل المباشر مع المندوب الأساسي:\n📱 هاتف / واتساب: <code>01143264206</code>\n\nأو أرسل رسالتك هنا وسيقوم المندوب بالرد عليك فوراً!`;
     const keyboard = {
       inline_keyboard: [[{ text: '🔙 العودة للقائمة الرئيسية', callback_data: 'back_to_menu' }]]
     };
@@ -369,7 +369,7 @@ async function confirmAndSaveOrder(chatId, user) {
 📦 <b>رقم الطلب:</b> #${orderId}
 🔹 <b>القسم:</b> ${category}
 ${phone ? `📞 <b>رقم الهاتف المسجل:</b> ${phone}\n` : ''}━━━━━━━━━━━━━━━━━
-🛵 تم إرسال تفاصيل طلبك للمناديب في طنطا فوراً، وهيتم التواصل والتحرك في أسرع وقت! 💨`;
+🛵 تم إرسال تفاصيل طلبك للمندوب الأساسي (01143264206) فوراً، وهيتم التواصل والتحرك في أسرع وقت! 💨`;
 
     const keyboard = {
       inline_keyboard: [
@@ -377,7 +377,7 @@ ${phone ? `📞 <b>رقم الهاتف المسجل:</b> ${phone}\n` : ''}━━
       ]
     };
 
-    // إرسال تنبيه فوري للأدمن على تيليجرام
+    // إرسال تنبيه فوري للمندوب الأساسي على تيليجرام
     await notifyAdmin(orderId, user, category, details, phone);
 
     await sendMessage(chatId, successMessage, keyboard);
@@ -387,9 +387,9 @@ ${phone ? `📞 <b>رقم الهاتف المسجل:</b> ${phone}\n` : ''}━━
   }
 }
 
-// إرسال إشعار فوري للأدمن عند ورود أي طلب جديد
+// إرسال إشعار فوري للمندوب الأساسي (01143264206) عند ورود أي طلب جديد
 async function notifyAdmin(orderId, user, category, details, phone) {
-  if (!ADMIN_CHAT_ID) return;
+  if (!PRIMARY_DRIVER_CHAT_ID) return;
 
   const now = new Date().toLocaleString('ar-EG', {
     timeZone: 'Africa/Cairo',
@@ -401,7 +401,7 @@ async function notifyAdmin(orderId, user, category, details, phone) {
     minute: 'numeric'
   });
 
-  const adminMsg = `🚨 <b>وصلك أوردر جديد يا كابتن!</b> 🛵💨
+  const adminMsg = `🚨 <b>وصلك أوردر جديد يا كابتن (المندوب الأساسي)!</b> 🛵💨
 ━━━━━━━━━━━━━━━━━
 📦 <b>رقم الطلب:</b> #${orderId}
 🔹 <b>القسم:</b> ${category}
@@ -425,10 +425,10 @@ ${details}
   }
 
   try {
-    await sendMessage(ADMIN_CHAT_ID, adminMsg, replyMarkup);
-    console.log(`📢 تم إرسال إشعار الأوردر #${orderId} لحساب الأدمن بنجاح.`);
+    await sendMessage(PRIMARY_DRIVER_CHAT_ID, adminMsg, replyMarkup);
+    console.log(`📢 تم إرسال إشعار الأوردر #${orderId} للمندوب الأساسي بنجاح.`);
   } catch (err) {
-    console.error('❌ فشل إرسال تنبيه للأدمن:', err?.message || err);
+    console.error('❌ فشل إرسال تنبيه للمندوب الأساسي:', err?.message || err);
   }
 }
 

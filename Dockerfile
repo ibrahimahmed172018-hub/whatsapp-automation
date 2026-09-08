@@ -16,11 +16,5 @@ RUN npm ci --omit=dev
 # نسخ باقي ملفات المشروع
 COPY . .
 
-# إنشاء مجلد الجلسة ومجلد الملفات بالصلاحيات المناسبة
-RUN mkdir -p auth_info uploads
-
-# كشف المنفذ
-EXPOSE 3000
-
 # تشغيل البوت
-CMD ["node", "index.js"]
+CMD ["node", "bot.js"]
