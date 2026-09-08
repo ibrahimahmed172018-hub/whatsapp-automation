@@ -1,23 +1,16 @@
 {
   "name": "tanta-delivery-bot",
   "version": "1.0.0",
-  "description": "Telegram Delivery Bot for Tanta",
-  "type": "module",
-  "main": "bot.js",
+  "description": "Telegram delivery bot for Tanta",
+  "main": "index.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "node --watch bot.js"
+    "start": "node index.js"
   },
-  "keywords": [
-    "telegram",
-    "delivery",
-    "tanta",
-    "bot"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "axios": "^1.20.0",
-    "sqlite3": "^6.0.1"
+    "telegraf": "^4.16.3",
+    "better-sqlite3": "^9.4.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

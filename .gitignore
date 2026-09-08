@@ -1,27 +1,5 @@
-# التبعيات ومجلدات التشغيل
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# ملفات الجلسة والمفاتيح السرية (هام جداً: لا ترفع auth_info أو .env أبداً)
-auth_info/
-.env
-.env.local
-.env.*.local
-
-# قواعد البيانات والملفات المؤقتة
-*.db
-*.db-journal
-*.sqlite
+delivery_bot.db
+delivery_bot.db-shm
+delivery_bot.db-wal
 *.log
-
-# ملفات النظام وبيئات التطوير
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-
-# مجلد الملفات المرفوعة
-uploads/*
-!uploads/.gitkeep
