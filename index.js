@@ -9,6 +9,21 @@ const DB_PATH                = process.env.DB_PATH || './delivery_bot.db';
 const PORT                   = process.env.PORT || 3000;
 const PRIMARY_ADMIN_CHAT_ID  = 5766938827; // حساب المندوب والأدمن الأساسي (رقم 01143264206)
 
+// تتبع رفع الصور المتعددة للمطاعم أثناء جلسة الأدمن
+const adminMultiPhotos = new Map(); // chatId -> { restName: string, photos: string[] }
+
+// مساعد تحليل ومعالجة صور المنيو (سواء صورة واحدة أو مصفوفة صور)
+function parseMenuImages(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+    return [raw];
+  } catch (e) {
+    return [raw];
+  }
+}
+
 // HTTP Health Check Server (Required for Render Web Services & Cloud Deployments)
 const server = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -157,6 +172,22 @@ const adminRestaurantsKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('🔙 رجوع للوحة الإدارة',     'admin_panel_back')],
 ]);
 
+function getRestImageChoiceKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🖼️ صورة واحدة فقط للمنيو', 'rest_img_single')],
+    [Markup.button.callback('📚 عدة صور (ألبوم منيو كامل)', 'rest_img_multi')],
+    [Markup.button.callback('⏭️ بدون صورة (تخطي)', 'rest_img_none')],
+    [Markup.button.callback('🔙 إلغاء والعودة', 'admin_restaurants')]
+  ]);
+}
+
+function getMultiPhotoKeyboard(count) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(`✅ حفظ الصور والانتهاء (${count} صور)`, 'rest_img_multi_finish')],
+    [Markup.button.callback('❌ إلغاء الإضافة', 'admin_restaurants')]
+  ]);
+}
+
 function getOrderActionKeyboard(orderId) {
   return Markup.inlineKeyboard([
     [
@@ -234,6 +265,7 @@ async function triggerAdminAuth(ctx) {
 // Command: /start & /menu
 bot.command(['start', 'menu'], async (ctx) => {
   stmts.resetUser.run(ctx.chat.id);
+  adminMultiPhotos.delete(ctx.chat.id);
   await ctx.reply(
     '👋 أهلاً بك في *بوت دليفري طنطا*!\n\nاختر الخدمة التي تريدها:',
     { parse_mode: 'Markdown', ...mainMenuKeyboard }
@@ -250,26 +282,51 @@ bot.command(['id', 'myid'], async (ctx) => {
   await ctx.reply(`🆔 معرف حسابك (Chat ID): <code>${ctx.chat.id}</code>`, { parse_mode: 'HTML' });
 });
 
-// Photo Message Handler (Used when admin uploads a restaurant menu photo)
+// Photo Message Handler (Used when admin uploads restaurant menu photo(s))
 bot.on('photo', async (ctx) => {
   const chatId = ctx.chat?.id;
   if (!chatId) return;
   const user = ctx.dbUser || stmts.getUser.get(chatId);
   if (!user) return;
 
-  if (user.state === 'ADMIN_ADD_REST_IMAGE') {
-    if (user.is_admin !== 1 && chatId !== PRIMARY_ADMIN_CHAT_ID) return ctx.reply('⛔ غير مصرح لك.');
+  const isUserAdmin = user.is_admin === 1 || chatId === PRIMARY_ADMIN_CHAT_ID;
+
+  // 1. وضع إضافة صورة واحدة فقط
+  if (user.state === 'ADMIN_ADD_REST_SINGLE_IMG' || user.state === 'ADMIN_ADD_REST_IMAGE') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح لك.');
 
     const photoArray = ctx.message.photo;
     const fileId = photoArray[photoArray.length - 1].file_id;
     const restName = user.pending_details || 'مطعم جديد';
 
-    stmts.insertRestaurant.run(restName, fileId);
+    // حفظ صورة واحدة بصيغة JSON Array
+    stmts.insertRestaurant.run(restName, JSON.stringify([fileId]));
     stmts.resetUser.run(chatId);
 
     await ctx.reply(`✅ *تم بنجاح إضافة مطعم "${restName}" مع صورة المنيو الخاصة به!* 📸🍔\n\nأصبح متاحاً الآن في قسم المطاعم ليراه العملاء.`, {
       parse_mode: 'Markdown',
       ...adminRestaurantsKeyboard
+    });
+    return;
+  }
+
+  // 2. وضع إضافة عدة صور للمنيو (ألبوم)
+  if (user.state === 'ADMIN_ADD_REST_MULTI_IMG') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح لك.');
+
+    let session = adminMultiPhotos.get(chatId);
+    if (!session) {
+      session = { restName: user.pending_details || 'مطعم جديد', photos: [] };
+      adminMultiPhotos.set(chatId, session);
+    }
+
+    const photoArray = ctx.message.photo;
+    const fileId = photoArray[photoArray.length - 1].file_id;
+    session.photos.push(fileId);
+
+    const count = session.photos.length;
+    await ctx.reply(`📥 تم استلام الصورة رقم (${count}). يمكنك إرسال المزيد، أو الضغط على زر الحفظ أدناه عند الانتهاء:`, {
+      ...getMultiPhotoKeyboard(count)
     });
     return;
   }
@@ -288,6 +345,8 @@ bot.on('text', async (ctx) => {
   const user = ctx.dbUser || stmts.getUser.get(chatId);
   if (!user) return;
 
+  const isUserAdmin = user.is_admin === 1 || chatId === PRIMARY_ADMIN_CHAT_ID;
+
   // دعم نصوص الأوامر المكتوبة بدون سلاش
   if (['/admin', 'admin', 'ادمن', 'الادمن', 'الأدمن', '/ادمن'].includes(lower)) {
     return triggerAdminAuth(ctx);
@@ -295,6 +354,7 @@ bot.on('text', async (ctx) => {
 
   if (['/start', 'start', 'ابدأ', 'ابدا', 'القائمة', 'menu'].includes(lower)) {
     stmts.resetUser.run(chatId);
+    adminMultiPhotos.delete(chatId);
     return ctx.reply(
       '👋 أهلاً بك في *بوت دليفري طنطا*!\n\nاختر الخدمة التي تريدها:',
       { parse_mode: 'Markdown', ...mainMenuKeyboard }
@@ -303,30 +363,43 @@ bot.on('text', async (ctx) => {
 
   // معالجة خطوة إدخال اسم المطعم من الأدمن
   if (user.state === 'ADMIN_ADD_REST_NAME') {
-    if (user.is_admin !== 1 && chatId !== PRIMARY_ADMIN_CHAT_ID) return ctx.reply('⛔ غير مصرح.');
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح.');
     if (text.length > 100) {
       return ctx.reply('⚠️ اسم المطعم طويل جداً، اكتب اسماً مختصراً.');
     }
-    stmts.setPending.run(text, 'ADMIN_ADD_REST_IMAGE', chatId);
+    stmts.setPending.run(text, 'ADMIN_CHOOSE_IMG_MODE', chatId);
     return ctx.reply(
-      `📸 ممتاز، اسم المطعم: *${text}*\n\nأرسل الآن *صورة المنيو* (أو اكتب "تخطي" إذا لم تتوفر صورة منيو حالياً):`,
-      { parse_mode: 'Markdown' }
+      `🍔 اسم المطعم: *${text}*\n\n📸 هل تريد إضافة *صورة واحدة فقط* للمنيو أم *عدة صور (ألبوم منيو كامل)*؟`,
+      {
+        parse_mode: 'Markdown',
+        ...getRestImageChoiceKeyboard()
+      }
     );
   }
 
-  // معالجة خطوة صورة المطعم إذا اختار الأدمن التخطي
-  if (user.state === 'ADMIN_ADD_REST_IMAGE') {
-    if (user.is_admin !== 1 && chatId !== PRIMARY_ADMIN_CHAT_ID) return ctx.reply('⛔ غير مصرح.');
-    if (['تخطي', 'تخطي الصورة', 'skip', 'لا'].includes(lower)) {
-      const restName = user.pending_details || 'مطعم جديد';
-      stmts.insertRestaurant.run(restName, null);
+  // معالجة تأكيد حفظ الصور المتعددة كتابياً
+  if (user.state === 'ADMIN_ADD_REST_MULTI_IMG') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح.');
+    if (['تم', 'حفظ', 'خلاص', 'done', 'save'].includes(lower)) {
+      const session = adminMultiPhotos.get(chatId);
+      const restName = session?.restName || user.pending_details || 'مطعم جديد';
+      const photos = session?.photos || [];
+
+      if (photos.length === 0) {
+        return ctx.reply('⚠️ لم ترسل أي صور بعد! أرسل صور المنيو أولاً أو اكتب "تخطي".');
+      }
+
+      stmts.insertRestaurant.run(restName, JSON.stringify(photos));
       stmts.resetUser.run(chatId);
-      return ctx.reply(`✅ *تمت إضافة مطعم "${restName}" بنجاح بدون صورة منيو.*`, {
-        parse_mode: 'Markdown',
-        ...adminRestaurantsKeyboard
-      });
-    } else {
-      return ctx.reply('📸 يرجى إرسال صورة المنيو أو كتابة كلمة "تخطي".');
+      adminMultiPhotos.delete(chatId);
+
+      return ctx.reply(
+        `✅ *تم بنجاح إضافة مطعم "${restName}" مع عدد (${photos.length}) صور للمنيو!* 📸🍔\n\nأصبح متاحاً الآن في قسم المطاعم ليراه العملاء.`,
+        {
+          parse_mode: 'Markdown',
+          ...adminRestaurantsKeyboard
+        }
+      );
     }
   }
 
@@ -382,6 +455,62 @@ bot.on('callback_query', async (ctx) => {
 
   const isUserAdmin = user.is_admin === 1 || chatId === PRIMARY_ADMIN_CHAT_ID;
 
+  // --- خيارات صور المنيو عند إضافة مطعم جديد ---
+  if (data === 'rest_img_single') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح.');
+    stmts.setState.run('ADMIN_ADD_REST_SINGLE_IMG', chatId);
+    return ctx.reply('📸 أرسل الآن *صورة واحدة فقط* للمنيو:', { parse_mode: 'Markdown' });
+  }
+
+  if (data === 'rest_img_multi') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح.');
+    stmts.setState.run('ADMIN_ADD_REST_MULTI_IMG', chatId);
+    const restName = user.pending_details || 'مطعم جديد';
+    adminMultiPhotos.set(chatId, { restName, photos: [] });
+    return ctx.reply(
+      `📚 *إضافة عدة صور للمنيو (ألبوم):*\n\nأرسل صور المنيو الآن (يمكنك إرسالها دفعة واحدة كألبوم أو صورة تلو الأخرى).\n\nعند الانتهاء من إرسال كافة الصور، اضغط على زر *[ ✅ حفظ الصور والانتهاء ]* بالأسفل:`,
+      {
+        parse_mode: 'Markdown',
+        ...getMultiPhotoKeyboard(0)
+      }
+    );
+  }
+
+  if (data === 'rest_img_none') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح.');
+    const restName = user.pending_details || 'مطعم جديد';
+    stmts.insertRestaurant.run(restName, null);
+    stmts.resetUser.run(chatId);
+    adminMultiPhotos.delete(chatId);
+    return ctx.reply(`✅ *تمت إضافة مطعم "${restName}" بنجاح بدون صورة منيو.*`, {
+      parse_mode: 'Markdown',
+      ...adminRestaurantsKeyboard
+    });
+  }
+
+  if (data === 'rest_img_multi_finish') {
+    if (!isUserAdmin) return ctx.reply('⛔ غير مصرح.');
+    const session = adminMultiPhotos.get(chatId);
+    const restName = session?.restName || user.pending_details || 'مطعم جديد';
+    const photos = session?.photos || [];
+
+    if (photos.length === 0) {
+      return ctx.reply('⚠️ لم ترسل أي صور بعد! أرسل صور المنيو أولاً أو اختر بدون صورة.');
+    }
+
+    stmts.insertRestaurant.run(restName, JSON.stringify(photos));
+    stmts.resetUser.run(chatId);
+    adminMultiPhotos.delete(chatId);
+
+    return ctx.reply(
+      `✅ *تم بنجاح إضافة مطعم "${restName}" مع عدد (${photos.length}) صور للمنيو!* 📸🍔\n\nأصبح متاحاً الآن في قسم المطاعم ليراه العملاء.`,
+      {
+        parse_mode: 'Markdown',
+        ...adminRestaurantsKeyboard
+      }
+    );
+  }
+
   // --- قسم المطاعم المخصص (عرض المطاعم المسجلة من الأدمن مع المنيو) ---
   if (data === 'cat_restaurants') {
     const restaurants = stmts.getRestaurants.all();
@@ -405,7 +534,7 @@ bot.on('callback_query', async (ctx) => {
     }
   }
 
-  // العميل اختار مطعماً محدداً
+  // العميل اختار مطعماً محدداً (عرض صورة واحدة أو ألبوم متعدد الصور)
   if (data.startsWith('select_rest:')) {
     const restId = Number(data.split(':')[1]);
     const rest = stmts.getRestaurant.get(restId);
@@ -417,13 +546,32 @@ bot.on('callback_query', async (ctx) => {
 
     const promptText = `🍔 *طلب من مطعم: ${rest.name}*\n\nاكتب تفاصيل طلبك كاملة:\n• الأصناف المطلوبة والكميات\n• عنوان التوصيل بالتفصيل\n• رقم للتواصل (اختياري)`;
 
-    if (rest.menu_image_id) {
-      return ctx.replyWithPhoto(rest.menu_image_id, {
+    const photos = parseMenuImages(rest.menu_image_id);
+
+    if (photos.length === 1) {
+      return ctx.replyWithPhoto(photos[0], {
         caption: promptText,
         parse_mode: 'Markdown'
       }).catch(async () => {
         await ctx.reply(promptText, { parse_mode: 'Markdown' });
       });
+    } else if (photos.length > 1) {
+      // إرسال كـ MediaGroup ألبوم في تيليجرام (حتى 10 صور في الدفعة)
+      const mediaGroup = photos.slice(0, 10).map((fileId, idx) => ({
+        type: 'photo',
+        media: fileId,
+        caption: idx === 0 ? `🍔 *منيو مطعم ${rest.name}* (ألبوم ${photos.length} صور)` : undefined,
+        parse_mode: idx === 0 ? 'Markdown' : undefined
+      }));
+
+      try {
+        await ctx.replyWithMediaGroup(mediaGroup);
+      } catch (err) {
+        for (const p of photos) {
+          await ctx.replyWithPhoto(p).catch(() => {});
+        }
+      }
+      return ctx.reply(promptText, { parse_mode: 'Markdown' });
     } else {
       return ctx.reply(promptText, { parse_mode: 'Markdown' });
     }
@@ -560,9 +708,17 @@ bot.on('callback_query', async (ctx) => {
         [Markup.button.callback(`❌ حذف مطعم ${r.name}`, `del_rest:${r.id}`)]
       ]);
 
-      if (r.menu_image_id) {
-        await ctx.replyWithPhoto(r.menu_image_id, {
-          caption: `🍽️ *${r.name}*\n📸 صورة المنيو مرفقة أعلاه.`,
+      const photos = parseMenuImages(r.menu_image_id);
+
+      if (photos.length === 1) {
+        await ctx.replyWithPhoto(photos[0], {
+          caption: `🍽️ *${r.name}*\n📸 صورة منيو واحدة مرفقة.`,
+          parse_mode: 'Markdown',
+          ...keyboard
+        }).catch(() => {});
+      } else if (photos.length > 1) {
+        await ctx.replyWithPhoto(photos[0], {
+          caption: `🍽️ *${r.name}*\n📸 ألبوم منيو يحتوي على *(${photos.length}) صور*.`,
           parse_mode: 'Markdown',
           ...keyboard
         }).catch(() => {});
@@ -676,4 +832,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { bot, db, stmts, CATEGORY_LABELS, CATEGORY_PROMPTS, STATUS_LABELS };
+module.exports = { bot, db, stmts, CATEGORY_LABELS, CATEGORY_PROMPTS, STATUS_LABELS, parseMenuImages };
