@@ -35,7 +35,15 @@ const CUSTOMER_STATUS_NOTIFICATIONS = {
   cancelled:  (id) => `❌ *نعتذر منك بخصوص طلبك #${id}:*\nتم إلغاء الطلب حالياً. للتفاصيل أو المساعدة تواصل معنا عبر خدمة العملاء.`,
 };
 
+// نظام نقاط الولاء والمحفظة
+const POINTS_PER_ORDER      = Number(process.env.POINTS_PER_ORDER) || 10;
+const WALLET_PACKAGES       = [
+  { id: 'balad', points: 80,  amount: 20, label: 'مشوار البلد (20 جنيه)' },
+  { id: 'tanta', points: 150, amount: 60, label: 'مشوار طنطا (60 جنيه)' },
+];
+
 module.exports = {
   BOT_TOKEN, ADMIN_PASS, DB_PATH, PORT, PRIMARY_ADMIN_CHAT_ID,
   STATUS_LABELS, INPUT_TYPE_LABELS, CUSTOMER_STATUS_NOTIFICATIONS,
+  POINTS_PER_ORDER, WALLET_PACKAGES,
 };

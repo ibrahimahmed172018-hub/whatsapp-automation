@@ -11,16 +11,38 @@ const { stmts } = require('./db');
 function buildMainMenuKeyboard() {
   const cats = stmts.getCategories.all();
   const buttons = cats.map(c => [Markup.button.callback(c.name, `open_cat:${c.id}`)]);
+  buttons.push([Markup.button.callback('💰 محفظتي ونقاطي', 'user_wallet')]);
   return Markup.inlineKeyboard(buttons);
 }
 
 // ─── لوحات العميل ────────────────────────────────────────────────────────────
 
-const confirmKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback('✅ تأكيد الطلب',    'confirm')],
-  [Markup.button.callback('✏️ تعديل التفاصيل', 'edit')],
-  [Markup.button.callback('❌ إلغاء',           'cancel')],
-]);
+function getConfirmKeyboard(walletBalance = 0) {
+  const buttons = [];
+  if (walletBalance > 0) {
+    buttons.push([Markup.button.callback(`💳 خصم ${walletBalance} ج من المحفظة وتأكيد`, 'confirm:wallet')]);
+    buttons.push([Markup.button.callback('💵 دفع كاش بالكامل بدون خصم', 'confirm:cash')]);
+  } else {
+    buttons.push([Markup.button.callback('✅ تأكيد الطلب', 'confirm')]);
+  }
+  buttons.push([Markup.button.callback('✏️ تعديل التفاصيل', 'edit')]);
+  buttons.push([Markup.button.callback('❌ إلغاء',           'cancel')]);
+  return Markup.inlineKeyboard(buttons);
+}
+
+const confirmKeyboard = getConfirmKeyboard(0);
+
+function getWalletKeyboard(points = 0) {
+  const buttons = [];
+  if (points >= 80) {
+    buttons.push([Markup.button.callback('🔄 استبدال 80 نقطة بـ 20 ج (مشوار البلد)', 'exchange:balad')]);
+  }
+  if (points >= 150) {
+    buttons.push([Markup.button.callback('🔄 استبدال 150 نقطة بـ 60 ج (مشوار طنطا)', 'exchange:tanta')]);
+  }
+  buttons.push([Markup.button.callback('🔙 العودة للقائمة الرئيسية', 'back_to_menu')]);
+  return Markup.inlineKeyboard(buttons);
+}
 
 function getOrderActionKeyboard(orderId) {
   return Markup.inlineKeyboard([
@@ -99,6 +121,8 @@ function getMultiPhotoKeyboard(count) {
 module.exports = {
   buildMainMenuKeyboard,
   confirmKeyboard,
+  getConfirmKeyboard,
+  getWalletKeyboard,
   getOrderActionKeyboard,
   adminKeyboard,
   adminRestaurantsKeyboard,

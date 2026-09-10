@@ -46,17 +46,20 @@ CREATE TABLE IF NOT EXISTS users (
   state             TEXT    NOT NULL DEFAULT 'IDLE',
   selected_category TEXT    DEFAULT NULL,
   pending_details   TEXT    DEFAULT NULL,
-  is_admin          INTEGER NOT NULL DEFAULT 0
+  is_admin          INTEGER NOT NULL DEFAULT 0,
+  points            INTEGER NOT NULL DEFAULT 0,
+  wallet_balance    REAL    NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS orders (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id     INTEGER NOT NULL,
-  username    TEXT    DEFAULT '',
-  category    TEXT    NOT NULL,
-  details     TEXT    NOT NULL,
-  status      TEXT    NOT NULL DEFAULT 'pending',
-  created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id         INTEGER NOT NULL,
+  username        TEXT    DEFAULT '',
+  category        TEXT    NOT NULL,
+  details         TEXT    NOT NULL,
+  status          TEXT    NOT NULL DEFAULT 'pending',
+  wallet_discount REAL    NOT NULL DEFAULT 0,
+  created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
 CREATE TABLE IF NOT EXISTS categories (
@@ -104,6 +107,11 @@ INSERT INTO category_items (category_id, name, image_ids, created_at)
   );
 `);
 
+// ─── Migrations for Points & Wallet ──────────────────────────────────────────
+try { db.exec("ALTER TABLE users ADD COLUMN points INTEGER NOT NULL DEFAULT 0;"); } catch {}
+try { db.exec("ALTER TABLE users ADD COLUMN wallet_balance REAL NOT NULL DEFAULT 0;"); } catch {}
+try { db.exec("ALTER TABLE orders ADD COLUMN wallet_discount REAL NOT NULL DEFAULT 0;"); } catch {}
+
 // ─── Prepared Statements ─────────────────────────────────────────────────────
 
 const stmts = {
@@ -116,9 +124,14 @@ const stmts = {
   resetUser:  db.prepare(`UPDATE users SET state='IDLE', selected_category=NULL, pending_details=NULL WHERE chat_id = ?`),
   setAdmin:   db.prepare('UPDATE users SET is_admin = ? WHERE chat_id = ?'),
   getAdmins:  db.prepare('SELECT chat_id FROM users WHERE is_admin = 1'),
+  addPoints:    db.prepare('UPDATE users SET points = points + ? WHERE chat_id = ?'),
+  deductPoints: db.prepare('UPDATE users SET points = MAX(0, points - ?) WHERE chat_id = ?'),
+  addWallet:    db.prepare('UPDATE users SET wallet_balance = wallet_balance + ? WHERE chat_id = ?'),
+  deductWallet: db.prepare('UPDATE users SET wallet_balance = MAX(0, wallet_balance - ?) WHERE chat_id = ?'),
+  countUserNonCancelledOrders: db.prepare("SELECT COUNT(*) as total FROM orders WHERE chat_id = ? AND status != 'cancelled'"),
 
   // ── Orders ──
-  insertOrder:       db.prepare(`INSERT INTO orders (chat_id, username, category, details, status) VALUES (?, ?, ?, ?, 'pending')`),
+  insertOrder:       db.prepare(`INSERT INTO orders (chat_id, username, category, details, status, wallet_discount) VALUES (?, ?, ?, ?, 'pending', ?)`),
   getOrder:          db.prepare('SELECT * FROM orders WHERE id = ?'),
   updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
   lastOrders:        db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),

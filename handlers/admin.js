@@ -4,7 +4,7 @@
 // لو عايز تضيف ميزة جديدة للأدمن (مش مطاعم أو أقسام)، ابدأ هنا
 // ==========================================
 
-const { PRIMARY_ADMIN_CHAT_ID, ADMIN_PASS, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS } = require('../config');
+const { PRIMARY_ADMIN_CHAT_ID, ADMIN_PASS, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS, POINTS_PER_ORDER } = require('../config');
 const { stmts } = require('../db');
 const { parseOrderDetails } = require('../db');
 const { adminKeyboard, getOrderActionKeyboard, buildMainMenuKeyboard } = require('../keyboards');
@@ -18,9 +18,21 @@ function notifyAdmins(bot, order) {
   const catObj   = stmts.getCategory.get(order.category);
   const catName  = catObj ? catObj.name : order.category;
 
+  // تحديد شارة العميل (جديد / سابق) ورصيد نقاطه ومحفظته
+  const customerBadge = (order.is_new !== undefined)
+    ? (order.is_new ? '🆕 عميل جديد' : `🌟 عميل سابق (${order.prev_orders} طلبات سابقة)`)
+    : '👤 عميل';
+
+  const pointsText = `⭐ نقاط الولاء: *${order.user_points ?? 0}* نقطة | 💵 المحفظة: *${order.user_wallet ?? 0}* ج`;
+  const discountText = (order.wallet_discount && order.wallet_discount > 0)
+    ? `\n💳 *خصم من المحفظة:* تم خصم *${order.wallet_discount}* ج من محفظة العميل\n💵 *المطلوب تحصيله كاش:* الحساب بعد الخصم`
+    : '';
+
   const msg = `🔔 *طلب جديد #${order.id}*\n\n`
     + `📂 القسم: ${catName}\n`
     + `👤 العميل: @${order.username || 'بدون يوزر'} (ID: \`${order.chat_id}\`)\n`
+    + `🏷️ نوع العميل: *${customerBadge}*\n`
+    + `${pointsText}${discountText}\n\n`
     + `📝 التفاصيل:\n${parsed.text}\n`
     + `📅 ${order.created_at}\n`
     + `📊 الحالة: ${STATUS_LABELS.pending}\n\n`
@@ -102,14 +114,34 @@ async function handleAdminCallback(ctx, next) {
     const order   = stmts.getOrder.get(orderId);
     if (!order) return ctx.reply('⚠️ لم يتم العثور على هذا الطلب.');
 
+    // إذا تم إلغاء الطلب ولم يكن ملغياً من قبل -> خصم نقاط الولاء واسترداد المحفظة
+    if (newStatus === 'cancelled' && order.status !== 'cancelled') {
+      stmts.deductPoints.run(POINTS_PER_ORDER, order.chat_id);
+      if (order.wallet_discount > 0) {
+        stmts.addWallet.run(order.wallet_discount, order.chat_id);
+      }
+    }
+
     stmts.updateOrderStatus.run(newStatus, orderId);
     const label = STATUS_LABELS[newStatus] || newStatus;
     await ctx.answerCbQuery(`تم تحديث الطلب #${orderId} إلى: ${label}`).catch(() => {});
 
-    const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
-    if (notifyFn && order.chat_id) {
-      ctx.telegram.sendMessage(order.chat_id, notifyFn(orderId), { parse_mode: 'Markdown' })
-        .catch(err => console.error(`فشل إرسال إشعار للعميل ${order.chat_id}:`, err.message));
+    if (order.chat_id) {
+      if (newStatus === 'cancelled') {
+        let cancelMsg = `❌ *نعتذر منك بخصوص طلبك #${orderId}:*\nتم إلغاء الطلب حالياً. للتفاصيل أو المساعدة تواصل معنا عبر خدمة العملاء.\n\n`
+          + `📉 تم خصم *${POINTS_PER_ORDER}* نقاط ولاء الخاصة بهذا الطلب.`;
+        if (order.wallet_discount > 0) {
+          cancelMsg += `\n💳 تم إعادة مبلغ *${order.wallet_discount}* جنيه إلى رصيد محفظتك بنجاح!`;
+        }
+        ctx.telegram.sendMessage(order.chat_id, cancelMsg, { parse_mode: 'Markdown' })
+          .catch(err => console.error(`فشل إرسال إشعار للعميل ${order.chat_id}:`, err.message));
+      } else {
+        const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
+        if (notifyFn) {
+          ctx.telegram.sendMessage(order.chat_id, notifyFn(orderId), { parse_mode: 'Markdown' })
+            .catch(err => console.error(`فشل إرسال إشعار للعميل ${order.chat_id}:`, err.message));
+        }
+      }
     }
     return;
   }
@@ -126,10 +158,15 @@ async function handleAdminCallback(ctx, next) {
       const parsed   = parseOrderDetails(o.details);
       const catObj   = stmts.getCategory.get(o.category);
       const catTitle = catObj ? catObj.name : o.category;
+      const customerUser = stmts.getUser.get(o.chat_id);
+      const userPointsLine = customerUser ? `\n⭐ نقاطه: ${customerUser.points} | 💵 محفظته: ${customerUser.wallet_balance} ج` : '';
+      const discountLine = (o.wallet_discount > 0) ? `\n💳 مخصوم من المحفظة: *${o.wallet_discount}* ج` : '';
+
       const card = `🔖 *طلب #${o.id}* | ${catTitle}\n`
         + `👤 العميل: @${o.username || 'بدون يوزر'} (ID: \`${o.chat_id}\`)\n`
         + `📅 ${o.created_at}\n`
-        + `📊 الحالة الحالية: *${STATUS_LABELS[o.status] || o.status}*\n`
+        + `📊 الحالة الحالية: *${STATUS_LABELS[o.status] || o.status}*`
+        + `${userPointsLine}${discountLine}\n`
         + `📝 التفاصيل:\n${parsed.text}`;
 
       if (parsed.photoId) {
