@@ -3,7 +3,7 @@
 // لو عايز تغيير في إعداد، هتجي لهنا مباشرة
 // ==========================================
 
-const BOT_TOKEN             = process.env.BOT_TOKEN || '8682760460:AAFyWu23L9CMLHHn656wA74b32kyVQX-rx4';
+const BOT_TOKEN             = process.env.BOT_TOKEN || '8682760460:AAF9rygK5Uz3OZ-VCh-R0UNLASsiDeFH5Vc';
 const ADMIN_PASS            = process.env.ADMIN_PASS || 'admin123';
 const DB_PATH               = process.env.DB_PATH   || './delivery_bot.db';
 const PORT                  = process.env.PORT      || 3000;

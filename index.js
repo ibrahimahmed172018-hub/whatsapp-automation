@@ -30,7 +30,11 @@ if (require.main === module) {
 
 // ─── Bot Instance ─────────────────────────────────────────────────────────────
 
-const bot = new Telegraf(BOT_TOKEN);
+const https = require('https');
+const agent = new https.Agent({ family: 4, keepAlive: false });
+const bot   = new Telegraf(BOT_TOKEN, {
+  telegram: { agent }
+});
 
 // ─── Middleware: تسجيل كل مستخدم وترقية الأدمن الأساسي ────────────────────────
 
@@ -140,9 +144,9 @@ bot.catch((err, ctx) => {
 // ─── Launch & Graceful Shutdown ───────────────────────────────────────────────
 
 if (require.main === module) {
-  bot.launch({ dropPendingUpdates: true })
-    .then(() => console.log('🚀 Tanta Delivery Bot is running...'))
-    .catch(err => { console.error('Failed to launch bot:', err); process.exit(1); });
+  bot.launch({ dropPendingUpdates: true }, () => {
+    console.log(`🚀 Tanta Delivery Bot (@${bot.botInfo?.username}) is running and polling for updates...`);
+  }).catch(err => { console.error('Failed to launch bot:', err); process.exit(1); });
 
   process.once('SIGINT',  () => { bot.stop('SIGINT');  server.close(); });
   process.once('SIGTERM', () => { bot.stop('SIGTERM'); server.close(); });
