@@ -221,7 +221,7 @@ const PROMPT_SHOPS = `🏪 *محلات المنطقة*
 const PROMPT_SUPPORT = `📞 *خدمة العملاء*
 
 اكتب استفسارك أو مشكلتك وسيتواصل معك فريقنا في أقرب وقت.
-للتواصل المباشر مع الإدارة والمندوب: 01143264206`;
+للتواصل المباشر مع الإدارة والمندوب: ${ADMIN_PHONE}`;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -241,12 +241,12 @@ function isAdmin(phone, user) {
   if (user && user.is_admin === 1) return true;
   const adminTarget = normalizePhone(ADMIN_PHONE);
   const senderPhone = normalizePhone(phone);
-  return senderPhone === adminTarget || senderPhone === '201143264206';
+  return senderPhone === adminTarget;
 }
 
 function getAdminJid() {
   const norm = normalizePhone(ADMIN_PHONE);
-  return `${norm || '201143264206'}@c.us`;
+  return `${norm}@c.us`;
 }
 
 async function forwardOrderToAdmin(orderId, orderData, imageRelPath) {
