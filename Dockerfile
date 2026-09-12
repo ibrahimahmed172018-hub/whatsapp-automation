@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM node:20-slim
 ENV TZ=Africa/Cairo
 ENV DEBIAN_FRONTEND=noninteractive
