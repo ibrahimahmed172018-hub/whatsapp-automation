@@ -1,5 +1,8 @@
-node_modules/
-delivery_bot.db
-delivery_bot.db-shm
-delivery_bot.db-wal
-*.log
+node_modules
+.env
+.wwebjs_auth
+.wwebjs_cache
+*.db
+*.db-shm
+*.db-wal
+public/uploads/

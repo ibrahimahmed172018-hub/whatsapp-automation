@@ -1,166 +1,114 @@
-// ==========================================
-// db.js — قاعدة البيانات و Prepared Statements
-// لو عايز تضيف جدول جديد أو query جديدة، هتجي هنا
-// ==========================================
-
 const Database = require('better-sqlite3');
-const { DB_PATH, PRIMARY_ADMIN_CHAT_ID } = require('./config');
-
-// ─── Session Maps (in-memory, تُعاد عند restart) ───────────────────────────
-// chatId -> { catId, itemName, photos[] }  → لتتبع رفع صور متعددة
-const adminMultiPhotos = new Map();
-// chatId -> { name, input_type }           → لتتبع خطوات إضافة قسم جديد
-const adminNewCategory = new Map();
-
-// ─── Helper Parsers ─────────────────────────────────────────────────────────
-
-/** تحليل image_ids المخزنة كـ JSON array أو string مفرد */
-function parseMenuImages(raw) {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
-    return [raw];
-  } catch { return [raw]; }
-}
-
-/** تحليل تفاصيل الطلب — يرجع { text, photoId } */
-function parseOrderDetails(raw) {
-  if (!raw) return { text: '', photoId: null };
-  try {
-    const p = JSON.parse(raw);
-    if (p && typeof p === 'object' && p.type === 'photo')
-      return { text: p.text || 'صورة مرفقة من العميل', photoId: p.fileId };
-  } catch {}
-  return { text: raw, photoId: null };
-}
-
-// ─── Database Setup ──────────────────────────────────────────────────────────
+const path = require('path');
+const { DB_PATH, ADMIN_PHONE } = require('./config');
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
+// Check and migrate schema if old Telegram schema exists
+const usersTableInfo = db.pragma('table_info(users)');
+const hasPhone = usersTableInfo.some((col) => col.name === 'phone');
+if (usersTableInfo.length > 0 && !hasPhone) {
+  db.exec(`
+    DROP TABLE IF EXISTS users;
+    DROP TABLE IF EXISTS orders;
+    DROP TABLE IF EXISTS restaurants;
+    DROP TABLE IF EXISTS categories;
+    DROP TABLE IF EXISTS category_items;
+  `);
+}
+
+// Initialize tables according to specified schema
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
-  chat_id           INTEGER PRIMARY KEY,
-  state             TEXT    NOT NULL DEFAULT 'IDLE',
-  selected_category TEXT    DEFAULT NULL,
-  pending_details   TEXT    DEFAULT NULL,
-  is_admin          INTEGER NOT NULL DEFAULT 0,
-  points            INTEGER NOT NULL DEFAULT 0,
-  wallet_balance    REAL    NOT NULL DEFAULT 0
+  phone TEXT PRIMARY KEY,
+  state TEXT DEFAULT 'IDLE',
+  selected_category TEXT,
+  selected_restaurant TEXT,
+  pending_details TEXT,
+  pending_image TEXT,
+  is_admin INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS orders (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  chat_id         INTEGER NOT NULL,
-  username        TEXT    DEFAULT '',
-  category        TEXT    NOT NULL,
-  details         TEXT    NOT NULL,
-  status          TEXT    NOT NULL DEFAULT 'pending',
-  wallet_discount REAL    NOT NULL DEFAULT 0,
-  created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
-);
-
-CREATE TABLE IF NOT EXISTS categories (
-  id          TEXT PRIMARY KEY,
-  name        TEXT NOT NULL,
-  prompt      TEXT NOT NULL,
-  input_type  TEXT NOT NULL DEFAULT 'text',
-  sort_order  INTEGER DEFAULT 0,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-);
-
-CREATE TABLE IF NOT EXISTS category_items (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  category_id  TEXT NOT NULL,
-  name         TEXT NOT NULL,
-  image_ids    TEXT DEFAULT NULL,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT,
+  category TEXT,
+  restaurant TEXT,
+  details TEXT,
+  image_url TEXT,
+  status TEXT DEFAULT 'NEW',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS restaurants (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  name           TEXT    NOT NULL,
-  menu_image_id  TEXT    DEFAULT NULL,
-  created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  menu_url TEXT
 );
 `);
 
-// ─── Seed Default Categories ─────────────────────────────────────────────────
+// Seed default restaurants
+const initialRestaurants = [
+  { name: 'مطعم كرم الشام', menu_url: 'https://images.unsplash.com/photo-1529006557810-274b9b2fc783?w=600' },
+  { name: 'كريب زون (Crepe Zone)', menu_url: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=600' },
+  { name: 'عنتر الكبابجي', menu_url: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=600' },
+  { name: 'كشري الباشا', menu_url: 'https://images.unsplash.com/photo-1585937421612-70a008356fbe?w=600' },
+  { name: 'كريب لافير', menu_url: 'https://images.unsplash.com/photo-1519708227418-c8fd9a32b7a2?w=600' },
+  { name: 'بازوكا', menu_url: 'https://images.unsplash.com/photo-1529006557810-274b9b2fc783?w=600' }
+];
 
-db.exec(`
-INSERT OR IGNORE INTO categories (id, name, prompt, input_type, sort_order) VALUES
-  ('cat_delivery',    '🛵 دليفري وطلبات خاصة',    '🛵 *دليفري وطلبات خاصة*\n\nاكتب تفاصيل طلبك كاملة:\n• العنوان (من أين؟ إلى أين؟)\n• وصف ما تريد إحضاره\n• أي ملاحظات إضافية',                               'text',          1),
-  ('cat_restaurants', '🍔 مطاعم طنطا',            '🍔 *مطاعم طنطا*\n\nاكتب طلبك:\n• اسم المطعم (لو عندك تفضيل)\n• الأصناف المطلوبة\n• عنوان التوصيل',                                                          'items',         2),
-  ('cat_shopping',    '🛒 تسوق من طنطا',          '🛒 *تسوق من طنطا*\n\nاكتب تفاصيل مشترياتك أو أرسل صورة لقائمة المشتريات:\n• اسم المنتج أو المحل\n• الكمية\n• عنوان التوصيل',                               'photo_or_text', 3),
-  ('cat_pharmacy',    '💊 صيدليات وأدوية طنطا',   '💊 *صيدليات وأدوية طنطا*\n\nاكتب طلب الدواء أو أرسل صورة الروشتة:\n• اسم الدواء أو صورة الروشتة\n• عنوان التوصيل\n• رقم التواصل (اختياري)',                'photo_or_text', 4),
-  ('cat_shops',       '🏪 محلات المنطقة',         '🏪 *محلات المنطقة*\n\nاكتب ما تريده من المحلات أو اختر المحل من القائمة:\n• اسم المحل أو المنطقة\n• المنتج المطلوب\n• عنوان التوصيل',                       'items',         5),
-  ('cat_support',     '📞 خدمة العملاء',          '📞 *خدمة العملاء*\n\nاكتب استفسارك أو مشكلتك وسيتواصل معك فريقنا في أقرب وقت.',                                                                             'text',          6);
+const countRow = db.prepare('SELECT COUNT(*) as count FROM restaurants').get();
+if (countRow.count === 0) {
+  const insertStmt = db.prepare('INSERT INTO restaurants (name, menu_url) VALUES (?, ?)');
+  for (const r of initialRestaurants) {
+    insertStmt.run(r.name, r.menu_url);
+  }
+}
 
-INSERT INTO category_items (category_id, name, image_ids, created_at)
-  SELECT 'cat_restaurants', name, menu_image_id, created_at FROM restaurants
-  WHERE NOT EXISTS (
-    SELECT 1 FROM category_items
-    WHERE category_items.category_id = 'cat_restaurants'
-      AND category_items.name = restaurants.name
-  );
-`);
-
-// ─── Migrations for Points & Wallet ──────────────────────────────────────────
-try { db.exec("ALTER TABLE users ADD COLUMN points INTEGER NOT NULL DEFAULT 0;"); } catch {}
-try { db.exec("ALTER TABLE users ADD COLUMN wallet_balance REAL NOT NULL DEFAULT 0;"); } catch {}
-try { db.exec("ALTER TABLE orders ADD COLUMN wallet_discount REAL NOT NULL DEFAULT 0;"); } catch {}
-
-// ─── Prepared Statements ─────────────────────────────────────────────────────
-
+// Prepared Statements
 const stmts = {
-  // ── Users ──
-  getUser:    db.prepare('SELECT * FROM users WHERE chat_id = ?'),
-  upsertUser: db.prepare(`INSERT INTO users (chat_id, state) VALUES (?, 'IDLE') ON CONFLICT(chat_id) DO NOTHING`),
-  setState:   db.prepare('UPDATE users SET state = ? WHERE chat_id = ?'),
-  setCategory:db.prepare('UPDATE users SET selected_category = ?, state = ? WHERE chat_id = ?'),
-  setPending: db.prepare('UPDATE users SET pending_details = ?, state = ? WHERE chat_id = ?'),
-  resetUser:  db.prepare(`UPDATE users SET state='IDLE', selected_category=NULL, pending_details=NULL WHERE chat_id = ?`),
-  setAdmin:   db.prepare('UPDATE users SET is_admin = ? WHERE chat_id = ?'),
-  getAdmins:  db.prepare('SELECT chat_id FROM users WHERE is_admin = 1'),
-  addPoints:    db.prepare('UPDATE users SET points = points + ? WHERE chat_id = ?'),
-  deductPoints: db.prepare('UPDATE users SET points = MAX(0, points - ?) WHERE chat_id = ?'),
-  addWallet:    db.prepare('UPDATE users SET wallet_balance = wallet_balance + ? WHERE chat_id = ?'),
-  deductWallet: db.prepare('UPDATE users SET wallet_balance = MAX(0, wallet_balance - ?) WHERE chat_id = ?'),
-  countUserNonCancelledOrders: db.prepare("SELECT COUNT(*) as total FROM orders WHERE chat_id = ? AND status != 'cancelled'"),
+  // Users
+  getUser: db.prepare('SELECT * FROM users WHERE phone = ?'),
+  upsertUser: db.prepare(`INSERT INTO users (phone, state) VALUES (?, 'IDLE') ON CONFLICT(phone) DO NOTHING`),
+  setState: db.prepare('UPDATE users SET state = ? WHERE phone = ?'),
+  setSelectedCategory: db.prepare('UPDATE users SET selected_category = ?, state = ? WHERE phone = ?'),
+  setSelectedRestaurant: db.prepare('UPDATE users SET selected_restaurant = ?, state = ? WHERE phone = ?'),
+  setPendingDetails: db.prepare('UPDATE users SET pending_details = ?, pending_image = ?, state = ? WHERE phone = ?'),
+  resetUser: db.prepare(`UPDATE users SET state = 'IDLE', selected_category = NULL, selected_restaurant = NULL, pending_details = NULL, pending_image = NULL WHERE phone = ?`),
+  setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE phone = ?'),
+  getAdmins: db.prepare('SELECT phone FROM users WHERE is_admin = 1'),
+  countUsers: db.prepare('SELECT COUNT(*) as total FROM users'),
 
-  // ── Orders ──
-  insertOrder:       db.prepare(`INSERT INTO orders (chat_id, username, category, details, status, wallet_discount) VALUES (?, ?, ?, ?, 'pending', ?)`),
-  getOrder:          db.prepare('SELECT * FROM orders WHERE id = ?'),
+  // Restaurants
+  getRestaurants: db.prepare('SELECT * FROM restaurants ORDER BY id ASC'),
+  getRestaurantById: db.prepare('SELECT * FROM restaurants WHERE id = ?'),
+  insertRestaurant: db.prepare('INSERT INTO restaurants (name, menu_url) VALUES (?, ?)'),
+  deleteRestaurant: db.prepare('DELETE FROM restaurants WHERE id = ?'),
+  countRestaurants: db.prepare('SELECT COUNT(*) as total FROM restaurants'),
+
+  // Orders
+  insertOrder: db.prepare(`INSERT INTO orders (phone, category, restaurant, details, image_url, status) VALUES (?, ?, ?, ?, ?, 'NEW')`),
+  getOrder: db.prepare('SELECT * FROM orders WHERE id = ?'),
   updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
-  lastOrders:        db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
-  countOrders:       db.prepare('SELECT COUNT(*) as total FROM orders'),
-  countUsers:        db.prepare('SELECT COUNT(*) as total FROM users'),
-  countPending:      db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='pending'"),
-  countDelivering:   db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('accepted', 'delivering')"),
-  countCompleted:    db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='completed'"),
-  countCancelled:    db.prepare("SELECT COUNT(*) as total FROM orders WHERE status='cancelled'"),
-
-  // ── Categories ──
-  getCategories:        db.prepare('SELECT * FROM categories ORDER BY sort_order ASC, created_at ASC'),
-  getCategory:          db.prepare('SELECT * FROM categories WHERE id = ?'),
-  insertCategory:       db.prepare('INSERT INTO categories (id, name, prompt, input_type, sort_order) VALUES (?, ?, ?, ?, ?)'),
-  deleteCategory:       db.prepare('DELETE FROM categories WHERE id = ?'),
-  updateCategoryPrompt: db.prepare('UPDATE categories SET prompt = ? WHERE id = ?'),
-  countCategories:      db.prepare('SELECT COUNT(*) as total FROM categories'),
-
-  // ── Category Items (مطاعم، محلات، إلخ) ──
-  getCategoryItems:   db.prepare('SELECT * FROM category_items WHERE category_id = ? ORDER BY id ASC'),
-  getCategoryItem:    db.prepare('SELECT * FROM category_items WHERE id = ?'),
-  insertCategoryItem: db.prepare('INSERT INTO category_items (category_id, name, image_ids) VALUES (?, ?, ?)'),
-  deleteCategoryItem: db.prepare('DELETE FROM category_items WHERE id = ?'),
-  countCategoryItems: db.prepare('SELECT COUNT(*) as total FROM category_items WHERE category_id = ?'),
-  countAllItems:      db.prepare('SELECT COUNT(*) as total FROM category_items'),
+  lastOrders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
+  countOrders: db.prepare('SELECT COUNT(*) as total FROM orders'),
+  countPending: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('NEW', 'pending')"),
+  countDelivering: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('accepted', 'delivering')"),
+  countCompleted: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status = 'completed'"),
+  countCancelled: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status = 'cancelled'"),
 };
 
-// تثبيت حساب الأدمن الأساسي دائماً
-stmts.upsertUser.run(PRIMARY_ADMIN_CHAT_ID);
-stmts.setAdmin.run(1, PRIMARY_ADMIN_CHAT_ID);
+// Ensure primary admin is seeded
+if (ADMIN_PHONE) {
+  const adminClean = ADMIN_PHONE.replace(/[^0-9]/g, '');
+  stmts.upsertUser.run(adminClean);
+  stmts.setAdmin.run(1, adminClean);
+  if (adminClean.startsWith('0')) {
+    const intl = '20' + adminClean.slice(1);
+    stmts.upsertUser.run(intl);
+    stmts.setAdmin.run(1, intl);
+  }
+}
 
-module.exports = { db, stmts, adminMultiPhotos, adminNewCategory, parseMenuImages, parseOrderDetails };
+module.exports = { db, stmts };
