@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const ADMIN_PHONE = process.env.ADMIN_PHONE || '01023678882';
+const ADMIN_PHONE = process.env.ADMIN_PHONE || '01143264206';
 const DB_PATH = process.env.DB_PATH || './delivery_bot.db';
 const PORT = process.env.PORT || 3000;
 
