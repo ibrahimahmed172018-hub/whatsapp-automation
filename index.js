@@ -20,6 +20,7 @@ app.use(express.json());
 
 let latestQR = null;
 let isConnected = false;
+let botReadyTime = null;
 
 // Health Check
 app.get('/', (req, res) => {
@@ -155,6 +156,7 @@ client.on('qr', async (qr) => {
 client.on('ready', () => {
   isConnected = true;
   latestQR = null;
+  botReadyTime = Math.floor(Date.now() / 1000);
   console.log('\n======================================================');
   console.log('🚀 WhatsApp Connected Successfully ✅');
   console.log('🛵 بوت دليفري طنطا جاهز الآن لاستقبال الرسائل والطلبات.');
@@ -173,6 +175,7 @@ client.on('disconnected', (reason) => {
   console.log('⚠️ انقطع الاتصال بواتساب:', reason);
   isConnected = false;
   latestQR = null;
+  botReadyTime = null;
 });
 
 // ─── Verbatim Constants & Copy ───────────────────────────────────────────────
@@ -405,8 +408,11 @@ const BOT_START_TIME = Math.floor(Date.now() / 1000);
 
 client.on('message', async (msg) => {
   try {
-    // Discard historical/synced messages from before bot started
-    if (msg.timestamp && msg.timestamp < BOT_START_TIME) return;
+    // Ignore completely if client is not ready yet
+    if (!botReadyTime) return;
+
+    // Discard historical/synced messages from before connection ready
+    if (!msg.timestamp || msg.timestamp < botReadyTime) return;
 
     // Discard messages from self and status broadcasts
     if (msg.fromMe === true || msg.from === 'status@broadcast') return;
