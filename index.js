@@ -4,7 +4,7 @@ const express = require('express');
 const qrcode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
-const { PORT, ADMIN_PHONE, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS, DATA_DIR } = require('./config');
+const { PORT, ADMIN_PHONE, ADMIN_PIN, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS, DATA_DIR } = require('./config');
 const { stmts } = require('./db');
 
 // ─── Express App & Uploads Setup ─────────────────────────────────────────────
@@ -41,7 +41,9 @@ if (path.resolve(localUploadsDir) !== path.resolve(targetUploadsDir) && fs.exist
 
 app.use('/uploads', express.static(targetUploadsDir));
 app.use('/uploads', express.static(localUploadsDir));
-app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 let latestQR = null;
 let isConnected = false;
@@ -49,7 +51,7 @@ let botReadyTime = null;
 
 // Health Check
 app.get('/', (req, res) => {
-  res.send('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية!');
+  res.send('🛵 بوت دليفري طنطا يعمل بنجاح في الخلفية! لوحة التحكم: /dashboard');
 });
 
 // Live QR Web Endpoint
@@ -65,13 +67,15 @@ app.get('/qr', async (req, res) => {
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 60px 20px; background: #0b141a; color: #e9edef; }
           .card { max-width: 440px; margin: 0 auto; background: #111b21; padding: 36px 24px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
           h1 { color: #25d366; font-size: 24px; margin-bottom: 12px; }
-          p { color: #8696a0; font-size: 16px; line-height: 1.6; }
+          p { color: #8696a0; font-size: 16px; line-height: 1.6; margin-bottom: 20px; }
+          a { display: inline-block; padding: 10px 20px; background: #00a884; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }
         </style>
       </head>
       <body>
         <div class="card">
           <h1>WhatsApp Connected Successfully ✅</h1>
           <p>بوت دليفري طنطا متصل وجاهز للعمل واستقبال الطلبات على مدار الساعة 🛵💨</p>
+          <a href="/dashboard">الانتقال للوحة التحكم (Dashboard) 🚀</a>
         </div>
       </body>
       </html>
@@ -137,9 +141,150 @@ app.get('/qr', async (req, res) => {
   `);
 });
 
+// ─── Dashboard & REST API Endpoints ──────────────────────────────────────────
+
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public/dashboard.html'));
+});
+
+function checkAuth(req, res, next) {
+  const authHeader = req.headers['authorization'] || req.query.token;
+  if (authHeader === 'Bearer admin-authorized' || authHeader === 'admin-authorized') {
+    return next();
+  }
+  return res.status(401).json({ error: 'غير مصرح بالدخول' });
+}
+
+app.post('/api/login', (req, res) => {
+  const { pin } = req.body || {};
+  if (pin && String(pin).trim() === String(ADMIN_PIN).trim()) {
+    return res.json({ success: true, token: 'admin-authorized' });
+  }
+  return res.status(401).json({ success: false, error: 'رمز PIN غير صحيح' });
+});
+
+app.get('/api/stats', checkAuth, (req, res) => {
+  try {
+    const groupRow = stmts.getSetting.get('drivers_group_id');
+    res.json({
+      isConnected,
+      adminPhone: ADMIN_PHONE,
+      driversGroupId: groupRow ? groupRow.value : null,
+      totalOrders: stmts.countOrders.get().total,
+      pending: stmts.countPending.get().total,
+      delivering: stmts.countDelivering.get().total,
+      completed: stmts.countCompleted.get().total,
+      cancelled: stmts.countCancelled.get().total,
+      totalUsers: stmts.countUsers.get().total,
+      totalRestaurants: stmts.countRestaurants.get().total,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/orders', checkAuth, (req, res) => {
+  try {
+    const orders = stmts.allOrders.all();
+    res.json({ orders });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orders/:id/status', checkAuth, async (req, res) => {
+  try {
+    const orderId = parseInt(req.params.id, 10);
+    const { status, driverPhone } = req.body || {};
+    if (!status) return res.status(400).json({ error: 'الحالة مطلوبة' });
+
+    const order = stmts.getOrder.get(orderId);
+    if (!order) return res.status(404).json({ error: 'الطلب غير موجود' });
+
+    if (status === 'accepted' && driverPhone) {
+      stmts.acceptOrder.run(driverPhone, orderId);
+    } else {
+      stmts.updateOrderStatus.run(status, orderId);
+    }
+
+    const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
+    if (custTarget) {
+      const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[status];
+      if (notifyFn) {
+        client.sendMessage(custTarget, notifyFn(orderId)).catch(() => {});
+      }
+    }
+
+    res.json({ success: true, message: `تم تحديث حالة الطلب #${orderId} إلى ${status}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/orders/:id', checkAuth, (req, res) => {
+  try {
+    const orderId = parseInt(req.params.id, 10);
+    stmts.deleteOrder.run(orderId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/restaurants', checkAuth, (req, res) => {
+  try {
+    res.json({ restaurants: stmts.getRestaurants.all() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/restaurants', checkAuth, (req, res) => {
+  try {
+    const { name, imageBase64 } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'اسم المطعم مطلوب' });
+    let menuUrl = null;
+    if (imageBase64) {
+      const matches = imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+      const ext = matches ? (matches[1].split('/')[1] || 'jpg') : 'jpg';
+      const data = matches ? matches[2] : imageBase64;
+      const fileName = `menu_${Date.now()}.${ext}`;
+      const destPath = path.join(targetUploadsDir, fileName);
+      fs.writeFileSync(destPath, Buffer.from(data, 'base64'));
+      menuUrl = `/uploads/${fileName}`;
+    }
+    stmts.insertRestaurant.run(name.trim(), menuUrl);
+    res.json({ success: true, message: `تمت إضافة مطعم ${name} بنجاح` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/restaurants/:id', checkAuth, (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    stmts.deleteRestaurant.run(id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings/group', checkAuth, (req, res) => {
+  try {
+    const { groupId } = req.body || {};
+    if (!groupId) return res.status(400).json({ error: 'معرف الجروب مطلوب' });
+    stmts.setSetting.run('drivers_group_id', groupId.trim());
+    res.json({ success: true, message: 'تم حفظ معرف جروب المناديب بنجاح' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 سيرفر الويب يعمل على المنفذ: ${PORT}`);
   console.log(`📱 رابط صفحة الـ QR بالمتصفح: http://localhost:${PORT}/qr`);
+  console.log(`📊 رابط لوحة التحكم (Dashboard): http://localhost:${PORT}/dashboard`);
 });
 
 // ─── WhatsApp Client Setup ───────────────────────────────────────────────────
@@ -417,13 +562,94 @@ async function handleGroupMessage(msg) {
       return;
     }
 
-    // Command to check group ID: /group_id
+    // 2. Command to check group ID: /group_id
     if (lower === '/group_id' || lower === 'معرف الجروب') {
       await msg.reply(`🆔 معرف هذا الجروب:\n\`${groupId}\``);
       return;
     }
 
-    // Check if message is accepting an order
+    // 3. Command: /orders (عرض آخر 10 طلبات في الجروب)
+    if (lower === '/orders' || lower === 'الطلبات' || lower === 'طلبات') {
+      const orders = stmts.lastOrders.all();
+      if (orders.length === 0) {
+        return msg.reply('📦 لا توجد طلبات مسجلة حالياً.');
+      }
+      let reply = `📦 *آخر 10 طلبات مسجلة:*\n━━━━━━━━━━━━━━━━━\n`;
+      for (const o of orders) {
+        const statusLabel = STATUS_LABELS[o.status] || o.status;
+        const custDisp = (o.phone && /^\d+$/.test(o.phone)) ? `+${o.phone}` : (o.phone || 'عميل واتساب');
+        const driverDisp = o.driver_phone ? (o.driver_phone.startsWith('+') || !/^\d+$/.test(o.driver_phone) ? o.driver_phone : `+${o.driver_phone}`) : null;
+        reply += `🔖 *طلب #${o.id}* | ${o.category}${o.restaurant ? ` (${o.restaurant})` : ''}\n`
+          + `👤 العميل: ${custDisp}\n`
+          + (driverDisp ? `🛵 المندوب: ${driverDisp}\n` : '')
+          + `📊 الحالة: ${statusLabel}\n`
+          + `📝 التفاصيل: ${o.details}\n`
+          + `─────────────────\n`;
+      }
+      reply += `💡 لقبول طلب: *قبول <رقم_الطلب>*\n💡 لتحديث حالة: */status <رقم_الطلب> <الحالة>*`;
+      return msg.reply(reply);
+    }
+
+    // 4. Command: /stats (إحصائيات البوت)
+    if (lower === '/stats' || lower === 'الاحصائيات' || lower === 'إحصائيات' || lower === 'احصائيات') {
+      const statsMsg = `📊 *إحصائيات بوت دليفري طنطا:*
+━━━━━━━━━━━━━━━━━
+👥 إجمالي العملاء المسجلين: ${stmts.countUsers.get().total}
+🍽️ إجمالي المطاعم: ${stmts.countRestaurants.get().total}
+📦 إجمالي كافة الطلبات: ${stmts.countOrders.get().total}
+─────────────────
+⏳ طلبات قيد الانتظار: ${stmts.countPending.get().total}
+🛵 طلبات جاري توصيلها: ${stmts.countDelivering.get().total}
+✅ طلبات تم تسليمها بنجاح: ${stmts.countCompleted.get().total}
+❌ طلبات ملغاة: ${stmts.countCancelled.get().total}`;
+      return msg.reply(statsMsg);
+    }
+
+    // 5. Command: /status <order_id> <new_status> (تحديث حالة طلب من الجروب)
+    if (lower.startsWith('/status')) {
+      const parts = lower.split(/\s+/);
+      if (parts.length < 3) {
+        return msg.reply('⚠️ الاستخدام: /status <رقم_الطلب> <الحالة_الجديدة>\nمثال: /status 5 delivering\nالحالات: accepted, delivering, completed, cancelled');
+      }
+      const orderId = parseInt(parts[1], 10);
+      const newStatus = parts[2].toLowerCase();
+      const validStatuses = ['new', 'pending', 'accepted', 'delivering', 'completed', 'cancelled'];
+      if (!validStatuses.includes(newStatus)) {
+        return msg.reply(`⚠️ حالة غير صالحة. الحالات المتاحة:\n${validStatuses.join(', ')}`);
+      }
+      const order = stmts.getOrder.get(orderId);
+      if (!order) {
+        return msg.reply(`⚠️ لم يتم العثور على الطلب #${orderId}.`);
+      }
+      stmts.updateOrderStatus.run(newStatus, orderId);
+      const label = STATUS_LABELS[newStatus] || newStatus;
+      await msg.reply(`✅ تم تحديث حالة الطلب #${orderId} إلى: ${label}`);
+
+      // إشعار العميل مباشرة
+      const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
+      if (custTarget) {
+        const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
+        if (notifyFn) {
+          client.sendMessage(custTarget, notifyFn(orderId)).catch(() => {});
+        }
+      }
+      return;
+    }
+
+    // 6. Command: /help (أوامر الجروب)
+    if (lower === '/help' || lower === 'الاوامر' || lower === 'اوامر' || lower === 'أوامر') {
+      const helpMsg = `🤖 *أوامر بوت دليفري طنطا في الجروب:*
+━━━━━━━━━━━━━━━━━
+🛵 *قبول <رقم>* : لقبول طلب وتوصيله للعميل (أو الرد على رسالة الطلب بـ قبول)
+📦 */orders* : عرض آخر 10 طلبات ومتابعة حالتها
+📊 */stats* : تقرير إحصائيات الطلبات
+🔄 */status <رقم> <الحالة>* : تحديث حالة طلب (delivering, completed, cancelled)
+⚙️ */set_group* : تعيين هذا الجروب كجروب المناديب الرسمي
+🆔 */group_id* : عرض المعرف الخاص بالجروب`;
+      return msg.reply(helpMsg);
+    }
+
+    // 7. Check if message is accepting an order
     let targetOrderId = null;
     const acceptMatch = text.match(/(?:^|\s)(?:قبول|استلام|\/accept|تم قبول)\s*#?(\d+)/i);
     if (acceptMatch) {
@@ -473,7 +699,7 @@ async function handleGroupMessage(msg) {
       ? `+${order.phone}`
       : (order.phone || 'عميل واتساب');
 
-    // 1. Confirmation to the couriers group
+    // Confirmation to the couriers group
     const groupAlert = `🛵 *تم قبول الطلب #${targetOrderId} بنجاح!*
 ━━━━━━━━━━━━━━━━━
 👤 *المندوب المسؤول:* ${driverDisplay}
@@ -485,7 +711,7 @@ ${order.details}
 
     await msg.reply(groupAlert);
 
-    // 2. Notify the customer directly on WhatsApp
+    // Notify the customer directly on WhatsApp
     const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
     if (custTarget) {
       const custMsg = `🛵 *تحديث بخصوص طلبك #${targetOrderId}:*\n`
@@ -495,7 +721,7 @@ ${order.details}
       });
     }
 
-    // 3. Notify Admin if configured and not the same driver
+    // Notify Admin if configured and not the same driver
     const adminTarget = cleanPhoneNumber(ADMIN_PHONE);
     if (adminTarget && adminTarget !== driverInfo.phone) {
       const adminNotify = `📢 *إشعار للإدارة:* قام المندوب (${driverDisplay}) بقبول الطلب #${targetOrderId}.`;
@@ -515,13 +741,20 @@ client.on('message', async (msg) => {
     // Ignore completely if client is not ready yet
     if (!botReadyTime) return;
 
-    // Discard historical/synced messages from before connection ready
-    if (!msg.timestamp || msg.timestamp < botReadyTime) return;
+    // Discard historical/synced messages from before connection ready (with 60s buffer)
+    if (msg.timestamp && botReadyTime && msg.timestamp < (botReadyTime - 60)) return;
 
-    // Discard messages from self and status broadcasts
-    if (msg.fromMe === true || msg.from === 'status@broadcast') return;
+    // Discard status broadcasts
+    if (msg.from === 'status@broadcast') return;
 
-    // Handle group messages (drivers group setup & order acceptance)
+    // Discard messages from self unless they are explicit commands (starting with / or keywords)
+    if (msg.fromMe === true) {
+      const body = msg.body?.trim() || '';
+      const isCmd = body.startsWith('/') || body.includes('تعيين الجروب') || body.startsWith('قبول');
+      if (!isCmd) return;
+    }
+
+    // Handle group messages (drivers group setup, commands & order acceptance)
     if (msg.from.includes('@g.us')) {
       await handleGroupMessage(msg);
       return;

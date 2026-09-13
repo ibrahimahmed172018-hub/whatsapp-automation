@@ -27,6 +27,7 @@ function getWritableDataDir() {
 const DATA_DIR = getWritableDataDir();
 
 const ADMIN_PHONE = process.env.ADMIN_PHONE || '01143264206';
+const ADMIN_PIN = process.env.ADMIN_PIN || '1234';
 const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'delivery_bot.db');
 const PORT = process.env.PORT || 3000;
 
@@ -51,6 +52,7 @@ const CUSTOMER_STATUS_NOTIFICATIONS = {
 module.exports = {
   DATA_DIR,
   ADMIN_PHONE,
+  ADMIN_PIN,
   DB_PATH,
   PORT,
   STATUS_LABELS,

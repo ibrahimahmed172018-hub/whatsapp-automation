@@ -124,6 +124,8 @@ const stmts = {
   updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
   acceptOrder: db.prepare("UPDATE orders SET status = 'accepted', driver_phone = ? WHERE id = ?"),
   lastOrders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
+  allOrders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
+  deleteOrder: db.prepare('DELETE FROM orders WHERE id = ?'),
   countOrders: db.prepare('SELECT COUNT(*) as total FROM orders'),
   countPending: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('NEW', 'pending')"),
   countDelivering: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('accepted', 'delivering')"),

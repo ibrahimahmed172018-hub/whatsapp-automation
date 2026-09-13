@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>لوحة تحكم دليفري طنطا 🛵</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090e11;
+      --card-bg: #111b21;
+      --card-hover: #182229;
+      --border: #222e35;
+      --primary: #00a884;
+      --primary-hover: #06cf9c;
+      --text: #e9edef;
+      --text-muted: #8696a0;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --info: #3b82f6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Cairo', sans-serif; }
+    body { background-color: var(--bg); color: var(--text); min-height: 100vh; padding: 16px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    
+    /* Header */
+    header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; background: var(--card-bg); border-radius: 16px; border: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+    .logo-area { display: flex; align-items: center; gap: 12px; }
+    .logo-icon { font-size: 32px; }
+    .logo-title h1 { font-size: 20px; font-weight: 800; color: #fff; }
+    .logo-title p { font-size: 13px; color: var(--text-muted); }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .btn { padding: 8px 16px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-secondary { background: #202c33; color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: #2a3942; }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .btn-danger:hover { background: var(--danger); color: #fff; }
+    .status-badge { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; background: #202c33; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot-green { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+    .dot-red { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+
+    /* Navigation Tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 12px; overflow-x: auto; }
+    .tab-btn { padding: 10px 18px; border-radius: 10px; background: transparent; border: none; color: var(--text-muted); font-size: 15px; font-weight: 700; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+    .tab-btn.active { background: #202c33; color: var(--primary); }
+    .tab-btn:hover:not(.active) { color: #fff; background: rgba(255,255,255,0.04); }
+
+    /* Stats Grid */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .stat-card { background: var(--card-bg); padding: 18px; border-radius: 14px; border: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; position: relative; overflow: hidden; }
+    .stat-card::after { content: ''; position: absolute; top: 0; right: 0; width: 4px; height: 100%; background: var(--primary); }
+    .stat-card.pending::after { background: var(--warning); }
+    .stat-card.delivering::after { background: var(--info); }
+    .stat-card.completed::after { background: #22c55e; }
+    .stat-card.cancelled::after { background: var(--danger); }
+    .stat-title { font-size: 13px; color: var(--text-muted); font-weight: 600; }
+    .stat-value { font-size: 26px; font-weight: 800; color: #fff; }
+
+    /* Section Cards */
+    .card { background: var(--card-bg); border-radius: 16px; border: 1px solid var(--border); padding: 20px; margin-bottom: 24px; }
+    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+    .card-title { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+
+    /* Filter Bar */
+    .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+    .filter-btn { padding: 5px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 1px solid var(--border); background: #202c33; color: var(--text-muted); cursor: pointer; }
+    .filter-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+    /* Orders Table */
+    .table-responsive { overflow-x: auto; border-radius: 12px; border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; text-align: right; }
+    th { background: #182229; padding: 12px 14px; font-size: 13px; font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    td { padding: 12px 14px; font-size: 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:hover { background: var(--card-hover); }
+    .order-badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .badge-new, .badge-pending { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-accepted { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-delivering { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
+    .badge-completed { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+    .badge-cancelled { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    
+    .action-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+    .btn-accept { background: #2563eb; color: #fff; }
+    .btn-deliver { background: #9333ea; color: #fff; }
+    .btn-complete { background: #16a34a; color: #fff; }
+    .btn-cancel { background: #dc2626; color: #fff; }
+
+    /* Thumbnails */
+    .img-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; transition: transform 0.2s; }
+    .img-thumb:hover { transform: scale(1.1); }
+
+    /* Restaurants List */
+    .rest-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+    .rest-card { background: #182229; border-radius: 12px; border: 1px solid var(--border); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .rest-img { width: 100%; height: 140px; object-fit: cover; border-radius: 8px; background: #111b21; }
+    .rest-meta { display: flex; justify-content: space-between; align-items: center; }
+    .rest-name { font-weight: 700; font-size: 15px; color: #fff; }
+
+    /* Form Inputs */
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+    .form-control { width: 100%; padding: 10px 14px; background: #202c33; border: 1px solid var(--border); border-radius: 10px; color: #fff; font-size: 14px; outline: none; }
+    .form-control:focus { border-color: var(--primary); }
+
+    /* Modal */
+    .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; opacity: 0; pointer-events: none; transition: all 0.2s; }
+    .modal-overlay.active { opacity: 1; pointer-events: auto; }
+    .modal-card { background: var(--card-bg); width: 100%; max-width: 440px; border-radius: 16px; border: 1px solid var(--border); padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .modal-title { font-size: 18px; font-weight: 800; color: #fff; }
+    .modal-close { background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; }
+
+    /* Auth Screen */
+    #auth-screen { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .auth-box { background: var(--card-bg); width: 100%; max-width: 380px; padding: 32px 24px; border-radius: 16px; border: 1px solid var(--border); text-align: center; }
+
+    /* Empty state */
+    .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+
+  <!-- شاشة تسجيل الدخول بـ PIN -->
+  <div id="auth-screen">
+    <div class="auth-box">
+      <div style="font-size: 40px; margin-bottom: 12px;">🔐</div>
+      <h2 style="color: #fff; margin-bottom: 8px;">لوحة تحكم دليفري طنطا</h2>
+      <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px;">أدخل رمز المرور الإداري (PIN) للمتابعة:</p>
+      <form id="login-form">
+        <input type="password" id="pin-input" class="form-control" placeholder="رمز PIN (الافتراضي: 1234)" style="text-align: center; font-size: 18px; letter-spacing: 4px; margin-bottom: 16px;" autofocus required>
+        <button type="submit" class="btn btn-primary" style="width: 100%; justify-content: center;">دخول للوحة التحكم 🚀</button>
+        <p id="login-err" style="color: var(--danger); font-size: 13px; margin-top: 10px; display: none;">رمز PIN غير صحيح، حاول مجدداً.</p>
+      </form>
+    </div>
+  </div>
+
+  <div class="container" id="app-container" style="display: none;">
+    
+    <!-- الهيدر العلوي -->
+    <header>
+      <div class="logo-area">
+        <span class="logo-icon">🛵</span>
+        <div class="logo-title">
+          <h1>دليفري طنطا - لوحة الإدارة</h1>
+          <p>إدارة الطلبات والمناديب والمطاعم بشكل مباشر</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="status-badge" id="wa-status">
+          <span class="dot dot-red" id="wa-dot"></span>
+          <span id="wa-status-text">جاري الفحص...</span>
+        </div>
+        <a href="/qr" target="_blank" class="btn btn-secondary">📱 رمز QR</a>
+        <button class="btn btn-secondary" onclick="fetchDashboardData()">🔄 تحديث</button>
+        <button class="btn btn-danger" onclick="logout()">خروج</button>
+      </div>
+    </header>
+
+    <!-- بطاقات الإحصائيات -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-title">إجمالي الطلبات</div>
+        <div class="stat-value" id="stat-total">0</div>
+      </div>
+      <div class="stat-card pending">
+        <div class="stat-title">قيد الانتظار</div>
+        <div class="stat-value" id="stat-pending">0</div>
+      </div>
+      <div class="stat-card delivering">
+        <div class="stat-title">جاري التوصيل</div>
+        <div class="stat-value" id="stat-delivering">0</div>
+      </div>
+      <div class="stat-card completed">
+        <div class="stat-title">تم تسليمها</div>
+        <div class="stat-value" id="stat-completed">0</div>
+      </div>
+      <div class="stat-card cancelled">
+        <div class="stat-title">طلبات ملغاة</div>
+        <div class="stat-value" id="stat-cancelled">0</div>
+      </div>
+    </div>
+
+    <!-- أزرار التنقل بين الأقسام -->
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('orders-tab')">📦 إدارة الطلبات</button>
+      <button class="tab-btn" onclick="switchTab('restaurants-tab')">🍽️ قائمة المطاعم</button>
+      <button class="tab-btn" onclick="switchTab('settings-tab')">⚙️ إعدادات الجروب والنظام</button>
+    </div>
+
+    <!-- تبويب 1: الطلبات -->
+    <div id="orders-tab" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>📋 الطلبات الواردة</span>
+            <span id="orders-count-badge" class="status-badge" style="font-size: 12px;">0 طلب</span>
+          </div>
+          <div class="filter-bar">
+            <button class="filter-btn active" onclick="filterOrders('all')">الكل</button>
+            <button class="filter-btn" onclick="filterOrders('pending')">⏳ قيد الانتظار</button>
+            <button class="filter-btn" onclick="filterOrders('delivering')">🛵 جاري التوصيل</button>
+            <button class="filter-btn" onclick="filterOrders('completed')">✅ مكتمل</button>
+            <button class="filter-btn" onclick="filterOrders('cancelled')">❌ ملغي</button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>التاريخ</th>
+                <th>القسم / المطعم</th>
+                <th>العميل</th>
+                <th>المندوب</th>
+                <th>التفاصيل المرفقة</th>
+                <th>الحالة</th>
+                <th>تغيير الحالة بنقرة واحدة</th>
+              </tr>
+            </thead>
+            <tbody id="orders-table-body">
+              <tr>
+                <td colspan="8" class="empty-state">جاري تحميل الطلبات...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- تبويب 2: المطاعم -->
+    <div id="restaurants-tab" class="tab-content" style="display: none;">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🍽️ المطاعم المسجلة في البوت</div>
+          <button class="btn btn-primary" onclick="openAddRestModal()">+ إضافة مطعم جديد</button>
+        </div>
+        <div class="rest-grid" id="restaurants-grid">
+          <!-- كروت المطاعم تظهر هنا ديناميكياً -->
+        </div>
+      </div>
+    </div>
+
+    <!-- تبويب 3: الإعدادات -->
+    <div id="settings-tab" class="tab-content" style="display: none;">
+      <div class="card">
+        <div class="card-title" style="margin-bottom: 16px;">⚙️ إعدادات جروب المناديب والإشعارات</div>
+        <div style="max-width: 500px;">
+          <div class="form-group">
+            <label>معرف جروب المناديب الحالي (Group ID):</label>
+            <input type="text" id="setting-group-id" class="form-control" placeholder="120363xxxxxx@g.us">
+            <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">يمكنك تعيينه أيضاً من داخل الواتساب بكتابة /set_group داخل الجروب.</p>
+          </div>
+          <button class="btn btn-primary" onclick="saveGroupSetting()">حفظ معرف الجروب ✅</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- مودال إضافة مطعم -->
+  <div class="modal-overlay" id="add-rest-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">إضافة مطعم جديد</h3>
+        <button class="modal-close" onclick="closeAddRestModal()">&times;</button>
+      </div>
+      <form id="add-rest-form">
+        <div class="form-group">
+          <label>اسم المطعم:</label>
+          <input type="text" id="rest-name-input" class="form-control" placeholder="مثال: كريب لافير، شاورما الريم" required>
+        </div>
+        <div class="form-group">
+          <label>صورة المنيو (اختياري):</label>
+          <input type="file" id="rest-file-input" class="form-control" accept="image/*">
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+          <button type="button" class="btn btn-secondary" onclick="closeAddRestModal()">إلغاء</button>
+          <button type="submit" class="btn btn-primary">حفظ المطعم 💾</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let token = localStorage.getItem('delivery_admin_token') || '';
+    let cachedOrders = [];
+    let currentFilter = 'all';
+
+    // التحقق الأولي من تسجيل الدخول
+    if (token) {
+      document.getElementById('auth-screen').style.display = 'none';
+      document.getElementById('app-container').style.display = 'block';
+      fetchDashboardData();
+    }
+
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const pin = document.getElementById('pin-input').value.trim();
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin })
+        });
+        const data = await res.json();
+        if (data.success) {
+          token = data.token;
+          localStorage.setItem('delivery_admin_token', token);
+          document.getElementById('auth-screen').style.display = 'none';
+          document.getElementById('app-container').style.display = 'block';
+          fetchDashboardData();
+        } else {
+          document.getElementById('login-err').style.display = 'block';
+        }
+      } catch {
+        document.getElementById('login-err').style.display = 'block';
+      }
+    });
+
+    function logout() {
+      localStorage.removeItem('delivery_admin_token');
+      location.reload();
+    }
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      document.getElementById(tabId).style.display = 'block';
+      event.target.classList.add('active');
+    }
+
+    async function fetchDashboardData() {
+      try {
+        // Stats
+        const statsRes = await fetch('/api/stats', {
+          headers: { 'Authorization': token }
+        });
+        if (statsRes.status === 401) return logout();
+        const stats = await statsRes.json();
+        
+        document.getElementById('stat-total').textContent = stats.totalOrders || 0;
+        document.getElementById('stat-pending').textContent = stats.pending || 0;
+        document.getElementById('stat-delivering').textContent = stats.delivering || 0;
+        document.getElementById('stat-completed').textContent = stats.completed || 0;
+        document.getElementById('stat-cancelled').textContent = stats.cancelled || 0;
+        
+        if (stats.driversGroupId) {
+          document.getElementById('setting-group-id').value = stats.driversGroupId;
+        }
+
+        // WhatsApp status
+        const waDot = document.getElementById('wa-dot');
+        const waText = document.getElementById('wa-status-text');
+        if (stats.isConnected) {
+          waDot.className = 'dot dot-green';
+          waText.textContent = 'واتساب متصل ✅';
+        } else {
+          waDot.className = 'dot dot-red';
+          waText.textContent = 'واتساب غير متصل ⚠️';
+        }
+
+        // Orders
+        const ordersRes = await fetch('/api/orders', {
+          headers: { 'Authorization': token }
+        });
+        const ordersData = await ordersRes.json();
+        cachedOrders = ordersData.orders || [];
+        renderOrders();
+
+        // Restaurants
+        const restsRes = await fetch('/api/restaurants', {
+          headers: { 'Authorization': token }
+        });
+        const restsData = await restsRes.json();
+        renderRestaurants(restsData.restaurants || []);
+
+      } catch (err) {
+        console.error('Error fetching dashboard data:', err);
+      }
+    }
+
+    function filterOrders(status) {
+      currentFilter = status;
+      document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+      event.target.classList.add('active');
+      renderOrders();
+    }
+
+    function renderOrders() {
+      const tbody = document.getElementById('orders-table-body');
+      let list = cachedOrders;
+      if (currentFilter === 'pending') {
+        list = list.filter(o => o.status === 'NEW' || o.status === 'pending');
+      } else if (currentFilter === 'delivering') {
+        list = list.filter(o => o.status === 'accepted' || o.status === 'delivering');
+      } else if (currentFilter === 'completed') {
+        list = list.filter(o => o.status === 'completed');
+      } else if (currentFilter === 'cancelled') {
+        list = list.filter(o => o.status === 'cancelled');
+      }
+
+      document.getElementById('orders-count-badge').textContent = `${list.length} طلب`;
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">لا توجد طلبات تطابق الفلتر الحالي.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = list.map(o => {
+        let badgeClass = 'badge-new';
+        let badgeLabel = 'قيد الانتظار';
+        if (o.status === 'accepted') { badgeClass = 'badge-accepted'; badgeLabel = 'مقبول'; }
+        else if (o.status === 'delivering') { badgeClass = 'badge-delivering'; badgeLabel = 'جاري التوصيل'; }
+        else if (o.status === 'completed') { badgeClass = 'badge-completed'; badgeLabel = 'تم التسليم'; }
+        else if (o.status === 'cancelled') { badgeClass = 'badge-cancelled'; badgeLabel = 'ملغي'; }
+
+        const customerPhone = (o.phone && /^\d+$/.test(o.phone)) ? `+${o.phone}` : (o.phone || 'عميل');
+        const driverPhone = o.driver_phone ? (o.driver_phone.startsWith('+') || !/^\d+$/.test(o.driver_phone) ? o.driver_phone : `+${o.driver_phone}`) : 'لم يُقبل بعد';
+
+        const imageHtml = o.image_url ? `<a href="${o.image_url}" target="_blank"><img src="${o.image_url}" class="img-thumb" title="عرض الصورة"></a>` : '';
+
+        return `
+          <tr>
+            <td><strong>#${o.id}</strong></td>
+            <td style="font-size: 12px; color: var(--text-muted);">${o.created_at || ''}</td>
+            <td>
+              <div><strong>${o.category || ''}</strong></div>
+              ${o.restaurant ? `<div style="font-size: 12px; color: var(--primary);">${o.restaurant}</div>` : ''}
+            </td>
+            <td>${customerPhone}</td>
+            <td style="font-size: 13px;">${driverPhone}</td>
+            <td>
+              <div style="max-width: 260px; line-height: 1.4;">${o.details || ''}</div>
+              ${imageHtml ? `<div style="margin-top: 6px;">${imageHtml}</div>` : ''}
+            </td>
+            <td><span class="order-badge ${badgeClass}">${badgeLabel}</span></td>
+            <td>
+              <div class="action-buttons">
+                <button class="btn btn-sm btn-accept" onclick="updateStatus(${o.id}, 'accepted')" title="قبول الطلب">🛵 قبول</button>
+                <button class="btn btn-sm btn-deliver" onclick="updateStatus(${o.id}, 'delivering')" title="جاري التوصيل">🚀 توصيل</button>
+                <button class="btn btn-sm btn-complete" onclick="updateStatus(${o.id}, 'completed')" title="تم التسليم">✅ تم</button>
+                <button class="btn btn-sm btn-cancel" onclick="updateStatus(${o.id}, 'cancelled')" title="إلغاء الطلب">❌ إلغاء</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function updateStatus(orderId, status) {
+      if (!confirm(`هل تريد بالتأكيد تحديث حالة الطلب #${orderId} إلى: ${status}؟`)) return;
+      try {
+        const res = await fetch(`/api/orders/${orderId}/status`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token
+          },
+          body: JSON.stringify({ status })
+        });
+        const data = await res.json();
+        if (data.success) {
+          fetchDashboardData();
+        } else {
+          alert('حدث خطأ: ' + (data.error || 'تعذر التحديث'));
+        }
+      } catch (err) {
+        alert('فشل الاتصال بالسيرفر: ' + err.message);
+      }
+    }
+
+    function renderRestaurants(rests) {
+      const grid = document.getElementById('restaurants-grid');
+      if (rests.length === 0) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column: 1/-1;">لا توجد مطاعم مسجلة حالياً.</div>';
+        return;
+      }
+      grid.innerHTML = rests.map(r => `
+        <div class="rest-card">
+          ${r.menu_url ? `<img src="${r.menu_url}" class="rest-img" alt="${r.name}">` : '<div class="rest-img" style="display:flex;align-items:center;justify-content:center;color:var(--text-muted);">لا توجد صورة منيو</div>'}
+          <div class="rest-meta">
+            <span class="rest-name">🍽️ ${r.name}</span>
+            <button class="btn btn-danger btn-sm" onclick="deleteRestaurant(${r.id}, '${r.name}')">حذف 🗑️</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function openAddRestModal() {
+      document.getElementById('add-rest-modal').classList.add('active');
+    }
+    function closeAddRestModal() {
+      document.getElementById('add-rest-modal').classList.remove('active');
+    }
+
+    document.getElementById('add-rest-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('rest-name-input').value.trim();
+      const fileInput = document.getElementById('rest-file-input');
+      let imageBase64 = null;
+
+      if (fileInput.files && fileInput.files[0]) {
+        const file = fileInput.files[0];
+        imageBase64 = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve(ev.target.result);
+          reader.readAsDataURL(file);
+        });
+      }
+
+      try {
+        const res = await fetch('/api/restaurants', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token
+          },
+          body: JSON.stringify({ name, imageBase64 })
+        });
+        const data = await res.json();
+        if (data.success) {
+          closeAddRestModal();
+          document.getElementById('add-rest-form').reset();
+          fetchDashboardData();
+        } else {
+          alert('خطأ: ' + (data.error || 'فشلت الإضافة'));
+        }
+      } catch (err) {
+        alert('خطأ: ' + err.message);
+      }
+    });
+
+    async function deleteRestaurant(id, name) {
+      if (!confirm(`هل تريد بالتأكيد حذف مطعم "${name}"؟`)) return;
+      try {
+        const res = await fetch(`/api/restaurants/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': token }
+        });
+        const data = await res.json();
+        if (data.success) {
+          fetchDashboardData();
+        }
+      } catch (err) {
+        alert('خطأ: ' + err.message);
+      }
+    }
+
+    async function saveGroupSetting() {
+      const groupId = document.getElementById('setting-group-id').value.trim();
+      if (!groupId) return alert('يرجى كتابة معرف الجروب');
+      try {
+        const res = await fetch('/api/settings/group', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token
+          },
+          body: JSON.stringify({ groupId })
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✅ تم حفظ معرف الجروب بنجاح!');
+        } else {
+          alert('خطأ: ' + (data.error || 'تعذر الحفظ'));
+        }
+      } catch (err) {
+        alert('خطأ: ' + err.message);
+      }
+    }
+
+    // Auto-refresh every 10 seconds
+    setInterval(() => {
+      if (token && document.getElementById('app-container').style.display !== 'none') {
+        fetchDashboardData();
+      }
+    }, 10000);
+  </script>
+</body>
+</html>
