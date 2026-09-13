@@ -276,12 +276,17 @@ async function forwardOrderToAdmin(orderId, orderData, imageRelPath) {
   }
 }
 
+const BOT_START_TIME = Math.floor(Date.now() / 1000);
+
 // ─── WhatsApp Message Handler ────────────────────────────────────────────────
 
 client.on('message', async (msg) => {
   try {
-    // Ignore status broadcasts & group messages
-    if (msg.from === 'status@broadcast' || msg.from.includes('@g.us')) return;
+    // Discard historical/synced messages from before bot started
+    if (msg.timestamp && msg.timestamp < BOT_START_TIME) return;
+
+    // Discard messages from self, status broadcasts, and groups
+    if (msg.fromMe === true || msg.from === 'status@broadcast' || msg.from.includes('@g.us')) return;
 
     const phone = msg.from.replace('@c.us', '').replace('@s.whatsapp.net', '');
     stmts.upsertUser.run(phone);
