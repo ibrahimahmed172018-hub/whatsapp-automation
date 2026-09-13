@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS orders (
   restaurant TEXT,
   details TEXT,
   image_url TEXT,
+  driver_phone TEXT DEFAULT NULL,
   status TEXT DEFAULT 'NEW',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -46,7 +47,16 @@ CREATE TABLE IF NOT EXISTS restaurants (
   name TEXT,
   menu_url TEXT
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 `);
+
+try {
+  db.exec('ALTER TABLE orders ADD COLUMN driver_phone TEXT DEFAULT NULL;');
+} catch {}
 
 // Seed default restaurants
 const initialRestaurants = [
@@ -91,12 +101,17 @@ const stmts = {
   insertOrder: db.prepare(`INSERT INTO orders (phone, category, restaurant, details, image_url, status) VALUES (?, ?, ?, ?, ?, 'NEW')`),
   getOrder: db.prepare('SELECT * FROM orders WHERE id = ?'),
   updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
+  acceptOrder: db.prepare("UPDATE orders SET status = 'accepted', driver_phone = ? WHERE id = ?"),
   lastOrders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
   countOrders: db.prepare('SELECT COUNT(*) as total FROM orders'),
   countPending: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('NEW', 'pending')"),
   countDelivering: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('accepted', 'delivering')"),
   countCompleted: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status = 'completed'"),
   countCancelled: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status = 'cancelled'"),
+
+  // Settings
+  getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
+  setSetting: db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
 };
 
 // Ensure primary admin is seeded

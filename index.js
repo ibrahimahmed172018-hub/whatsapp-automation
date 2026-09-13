@@ -252,27 +252,150 @@ function getAdminJid() {
 }
 
 async function forwardOrderToAdmin(orderId, orderData, imageRelPath) {
-  try {
-    const adminJid = getAdminJid();
-    const adminMsg = `🔔 *طلب جديد #${orderId}*\n\n`
-      + `📂 القسم: ${orderData.category}\n`
-      + (orderData.restaurant ? `🏪 المطعم: ${orderData.restaurant}\n` : '')
-      + `👤 العميل: +${orderData.phone}\n`
-      + `📝 التفاصيل:\n${orderData.details}\n`
-      + `📅 ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}\n`
-      + `📊 الحالة: ⏳ قيد الانتظار (NEW)`;
+  const alertMsg = `🔔 *طلب جديد برقم #${orderId}*
 
-    if (imageRelPath) {
-      const fullPath = path.join(__dirname, 'public', imageRelPath.replace(/^\//, ''));
-      if (fs.existsSync(fullPath)) {
-        const media = MessageMedia.fromFilePath(fullPath);
-        await client.sendMessage(adminJid, media, { caption: adminMsg });
-        return;
+📂 القسم: ${orderData.category}
+${orderData.restaurant ? `🏪 المطعم: ${orderData.restaurant}\n` : ''}👤 هاتف العميل: +${orderData.phone}
+📝 التفاصيل:
+${orderData.details}
+📅 ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}
+📊 الحالة: ⏳ قيد الانتظار (NEW)
+─────────────────
+🛵 *لقبول الطلب:*
+أرسل في الجروب:
+*قبول ${orderId}*
+أو اضغط رد (Reply) واكتب: *قبول*`;
+
+  const groupRow = stmts.getSetting.get('drivers_group_id');
+  const driversGroupId = groupRow ? groupRow.value : null;
+
+  const targets = [];
+  if (driversGroupId) targets.push(driversGroupId);
+
+  const adminJid = getAdminJid();
+  if (adminJid && !targets.includes(adminJid)) targets.push(adminJid);
+
+  for (const target of targets) {
+    try {
+      if (imageRelPath) {
+        const fullPath = path.join(__dirname, 'public', imageRelPath.replace(/^\//, ''));
+        if (fs.existsSync(fullPath)) {
+          const media = MessageMedia.fromFilePath(fullPath);
+          await client.sendMessage(target, media, { caption: alertMsg });
+          continue;
+        }
+      }
+      await client.sendMessage(target, alertMsg);
+    } catch (err) {
+      console.error(`⚠️ فشل إرسال إشعار الطلب إلى ${target}:`, err.message);
+    }
+  }
+}
+
+// ─── Couriers Group Message Handler ──────────────────────────────────────────
+
+async function handleGroupMessage(msg) {
+  try {
+    const rawText = msg.body?.trim() || '';
+    const text = normalizeDigits(rawText);
+    const lower = text.toLowerCase();
+    const groupId = msg.from;
+
+    // Extract sender phone in group
+    const senderJid = msg.author || msg.participant || '';
+    const senderPhone = normalizePhone(senderJid);
+
+    // 1. Command to set/register this group as the drivers group
+    if (
+      lower.startsWith('/set_group') ||
+      lower.startsWith('/setgroup') ||
+      lower.startsWith('/drivers') ||
+      lower.includes('تعيين الجروب') ||
+      lower.includes('تفعيل الجروب') ||
+      lower.includes('جروب المناديب')
+    ) {
+      stmts.setSetting.run('drivers_group_id', groupId);
+      const confirmReply = `✅ *تم تعيين هذا الجروب كجروب المناديب الرسمي بنجاح!* 🛵💨\n\n`
+        + `📌 سيتم إرسال جميع إشعارات الطلبات الجديدة هنا مباشرة للقبول والتوصيل.\n`
+        + `💡 لقبول أي طلب، يرسل المندوب: *قبول <رقم_الطلب>* أو يرد على رسالة الطلب بـ *قبول*`;
+      await msg.reply(confirmReply);
+      return;
+    }
+
+    // Command to check group ID: /group_id
+    if (lower === '/group_id' || lower === 'معرف الجروب') {
+      await msg.reply(`🆔 معرف هذا الجروب:\n\`${groupId}\``);
+      return;
+    }
+
+    // Check if message is accepting an order
+    let targetOrderId = null;
+    const acceptMatch = text.match(/(?:^|\s)(?:قبول|استلام|\/accept|تم قبول)\s*#?(\d+)/i);
+    if (acceptMatch) {
+      targetOrderId = parseInt(acceptMatch[1], 10);
+    } else if (msg.hasQuotedMsg) {
+      const isAcceptWord = /^(?:قبول|استلام|\/accept|أنا|انا|تمام|تم|1)$/i.test(text.trim());
+      if (isAcceptWord) {
+        const quoted = await msg.getQuotedMessage();
+        const quotedText = quoted?.body || quoted?.caption || '';
+        const idMatch = quotedText.match(/#(\d+)/);
+        if (idMatch) {
+          targetOrderId = parseInt(idMatch[1], 10);
+        }
       }
     }
-    await client.sendMessage(adminJid, adminMsg);
+
+    if (!targetOrderId) return;
+
+    const order = stmts.getOrder.get(targetOrderId);
+    if (!order) {
+      await msg.reply(`⚠️ لم يتم العثور على طلب برقم #${targetOrderId}.`);
+      return;
+    }
+
+    if (order.status !== 'NEW' && order.status !== 'pending') {
+      const currentDriver = order.driver_phone ? `+${order.driver_phone}` : 'مندوب آخر';
+      const statusLabel = STATUS_LABELS[order.status] || order.status;
+      await msg.reply(
+        `⚠️ عذراً، الطلب #${targetOrderId} تم قبوله بالفعل مسبقاً بواسطة: *${currentDriver}*\n`
+        + `📊 الحالة الحالية: ${statusLabel}`
+      );
+      return;
+    }
+
+    const driverNumber = senderPhone || 'غير معروف';
+    stmts.acceptOrder.run(driverNumber, targetOrderId);
+
+    // 1. Confirmation to the couriers group
+    const groupAlert = `🛵 *تم قبول الطلب #${targetOrderId} بنجاح!*
+━━━━━━━━━━━━━━━━━
+👤 *المندوب المسؤول:* +${driverNumber}
+📞 *هاتف العميل للتواصل:* +${order.phone}
+${order.restaurant ? `🏪 *المطعم:* ${order.restaurant}\n` : ''}📂 *القسم:* ${order.category}
+📝 *التفاصيل:*
+${order.details}
+📊 *الحالة:* 🛵 مقبول وجاري التجهيز والتوصيل 💨`;
+
+    await msg.reply(groupAlert);
+
+    // 2. Notify the customer directly on WhatsApp
+    if (order.phone) {
+      const custJid = `${normalizePhone(order.phone)}@c.us`;
+      const custMsg = `🛵 *تحديث بخصوص طلبك #${targetOrderId}:*\n`
+        + `تم قبول طلبك بواسطة المندوب (+${driverNumber}) وجاري تجهيزه وتوصيله إليك الآن! 💨`;
+      client.sendMessage(custJid, custMsg).catch((err) => {
+        console.error(`فشل إشعار العميل ${order.phone}:`, err.message);
+      });
+    }
+
+    // 3. Notify Admin if configured and not the same driver
+    const adminTarget = normalizePhone(ADMIN_PHONE);
+    if (adminTarget && adminTarget !== driverNumber) {
+      const adminNotify = `📢 *إشعار للإدارة:* قام المندوب (+${driverNumber}) بقبول الطلب #${targetOrderId}.`;
+      client.sendMessage(`${adminTarget}@c.us`, adminNotify).catch(() => {});
+    }
   } catch (err) {
-    console.error('⚠️ فشل في إرسال إشعار الطلب للأدمن:', err.message);
+    console.error('⚠️ خطأ في معالجة رسالة الجروب:', err.message);
   }
 }
 
@@ -285,8 +408,14 @@ client.on('message', async (msg) => {
     // Discard historical/synced messages from before bot started
     if (msg.timestamp && msg.timestamp < BOT_START_TIME) return;
 
-    // Discard messages from self, status broadcasts, and groups
-    if (msg.fromMe === true || msg.from === 'status@broadcast' || msg.from.includes('@g.us')) return;
+    // Discard messages from self and status broadcasts
+    if (msg.fromMe === true || msg.from === 'status@broadcast') return;
+
+    // Handle group messages (drivers group setup & order acceptance)
+    if (msg.from.includes('@g.us')) {
+      await handleGroupMessage(msg);
+      return;
+    }
 
     const phone = msg.from.replace('@c.us', '').replace('@s.whatsapp.net', '');
     stmts.upsertUser.run(phone);
@@ -378,6 +507,7 @@ client.on('message', async (msg) => {
           const statusLabel = STATUS_LABELS[o.status] || o.status;
           reply += `🔖 *طلب #${o.id}* | ${o.category}${o.restaurant ? ` (${o.restaurant})` : ''}\n`
             + `👤 العميل: +${o.phone}\n`
+            + (o.driver_phone ? `🛵 المندوب: +${o.driver_phone}\n` : '')
             + `📊 الحالة: ${statusLabel}\n`
             + `📅 ${o.created_at}\n`
             + `📝 التفاصيل: ${o.details}\n`
