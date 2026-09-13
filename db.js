@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS users (
   selected_restaurant TEXT,
   pending_details TEXT,
   pending_image TEXT,
-  is_admin INTEGER DEFAULT 0
+  is_admin INTEGER DEFAULT 0,
+  points INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -72,6 +73,9 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
+try {
+  db.exec('ALTER TABLE users ADD COLUMN points INTEGER DEFAULT 0;');
+} catch {}
 try {
   db.exec('ALTER TABLE orders ADD COLUMN driver_phone TEXT DEFAULT NULL;');
 } catch {}
@@ -101,6 +105,17 @@ if (countRow.count === 0) {
 const stmts = {
   // Users
   getUser: db.prepare('SELECT * FROM users WHERE phone = ?'),
+  getUserPoints: db.prepare('SELECT points FROM users WHERE phone = ?'),
+  addPoints: db.prepare('UPDATE users SET points = points + ? WHERE phone = ?'),
+  deductPoints: db.prepare('UPDATE users SET points = MAX(0, points - ?) WHERE phone = ?'),
+  getUserOrderStats: db.prepare(`
+    SELECT 
+      COUNT(*) as total_orders,
+      COALESCE(SUM(CASE WHEN category LIKE '%دليفري%' THEN 1 ELSE 0 END), 0) as delivery_orders
+    FROM orders 
+    WHERE (chat_jid = ? OR (phone = ? AND phone != 'عميل واتساب')) 
+      AND status != 'cancelled'
+  `),
   upsertUser: db.prepare(`INSERT INTO users (phone, state) VALUES (?, 'IDLE') ON CONFLICT(phone) DO NOTHING`),
   setState: db.prepare('UPDATE users SET state = ? WHERE phone = ?'),
   setSelectedCategory: db.prepare('UPDATE users SET selected_category = ?, state = ? WHERE phone = ?'),
@@ -124,7 +139,13 @@ const stmts = {
   updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
   acceptOrder: db.prepare("UPDATE orders SET status = 'accepted', driver_phone = ? WHERE id = ?"),
   lastOrders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 10'),
-  allOrders: db.prepare('SELECT * FROM orders ORDER BY id DESC LIMIT 100'),
+  allOrders: db.prepare(`
+    SELECT o.*,
+      COALESCE((SELECT points FROM users WHERE phone = o.chat_jid LIMIT 1), (SELECT points FROM users WHERE phone = o.phone LIMIT 1), 0) as customer_points,
+      (SELECT COUNT(*) FROM orders o2 WHERE (o2.chat_jid = o.chat_jid OR (o2.phone = o.phone AND o2.phone != 'عميل واتساب')) AND o2.status != 'cancelled') as customer_total_orders
+    FROM orders o
+    ORDER BY o.id DESC LIMIT 100
+  `),
   deleteOrder: db.prepare('DELETE FROM orders WHERE id = ?'),
   countOrders: db.prepare('SELECT COUNT(*) as total FROM orders'),
   countPending: db.prepare("SELECT COUNT(*) as total FROM orders WHERE status IN ('NEW', 'pending')"),

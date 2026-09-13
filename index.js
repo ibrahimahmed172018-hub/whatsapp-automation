@@ -4,7 +4,7 @@ const express = require('express');
 const qrcode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
-const { PORT, ADMIN_PHONE, ADMIN_PIN, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS, DATA_DIR } = require('./config');
+const { PORT, ADMIN_PHONE, ADMIN_PIN, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS, DATA_DIR, POINTS_PER_ORDER } = require('./config');
 const { stmts } = require('./db');
 
 // ─── Express App & Uploads Setup ─────────────────────────────────────────────
@@ -192,28 +192,73 @@ app.get('/api/orders', checkAuth, (req, res) => {
   }
 });
 
+// ─── Loyalty Points & Order Status Helpers ────────────────────────────────────
+
+function getCustomerLoyaltyInfo(chatJid, phone) {
+  const stats = stmts.getUserOrderStats.get(chatJid, phone || '') || { total_orders: 0, delivery_orders: 0 };
+  const total = Number(stats.total_orders || 0);
+  const delivery = Number(stats.delivery_orders || 0);
+  const userRow = stmts.getUserPoints.get(chatJid);
+  const points = userRow ? Number(userRow.points || 0) : 0;
+  return { total, delivery, points };
+}
+
+function calculateMilestones(totalOrders, deliveryOrders) {
+  const isTantaMilestone = totalOrders > 0 && totalOrders % 15 === 0;
+  const remTanta = 15 - (totalOrders % 15);
+
+  const isBaladMilestone = deliveryOrders > 0 && deliveryOrders % 3 === 0;
+  const remBalad = 3 - (deliveryOrders % 3);
+
+  return {
+    isTantaMilestone,
+    remTanta,
+    isBaladMilestone,
+    remBalad,
+  };
+}
+
+async function updateOrderAndNotify(orderId, newStatus, driverPhone = null) {
+  const order = stmts.getOrder.get(orderId);
+  if (!order) return { success: false, error: 'الطلب غير موجود' };
+
+  if (newStatus === 'accepted' && driverPhone) {
+    stmts.acceptOrder.run(driverPhone, orderId);
+  } else {
+    stmts.updateOrderStatus.run(newStatus, orderId);
+  }
+
+  let ptsDeducted = 0;
+  // عند إلغاء الطلب: خصم نقاط الولاء الخاصة به من رصيد العميل
+  if (newStatus === 'cancelled' && order.status !== 'cancelled') {
+    ptsDeducted = POINTS_PER_ORDER;
+    const targetUser = order.chat_jid || order.phone;
+    if (targetUser) {
+      stmts.deductPoints.run(POINTS_PER_ORDER, targetUser);
+    }
+  }
+
+  // إشعار العميل فوراً بتحديث الحالة على الواتساب
+  const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
+  if (custTarget) {
+    const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
+    if (notifyFn) {
+      const msgText = typeof notifyFn === 'function' ? notifyFn(orderId, ptsDeducted) : notifyFn;
+      client.sendMessage(custTarget, msgText).catch(() => {});
+    }
+  }
+
+  return { success: true, order };
+}
+
 app.post('/api/orders/:id/status', checkAuth, async (req, res) => {
   try {
     const orderId = parseInt(req.params.id, 10);
     const { status, driverPhone } = req.body || {};
     if (!status) return res.status(400).json({ error: 'الحالة مطلوبة' });
 
-    const order = stmts.getOrder.get(orderId);
-    if (!order) return res.status(404).json({ error: 'الطلب غير موجود' });
-
-    if (status === 'accepted' && driverPhone) {
-      stmts.acceptOrder.run(driverPhone, orderId);
-    } else {
-      stmts.updateOrderStatus.run(status, orderId);
-    }
-
-    const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
-    if (custTarget) {
-      const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[status];
-      if (notifyFn) {
-        client.sendMessage(custTarget, notifyFn(orderId)).catch(() => {});
-      }
-    }
+    const result = await updateOrderAndNotify(orderId, status, driverPhone);
+    if (!result.success) return res.status(404).json({ error: result.error });
 
     res.json({ success: true, message: `تم تحديث حالة الطلب #${orderId} إلى ${status}` });
   } catch (err) {
@@ -361,8 +406,9 @@ const MAIN_MENU_TEXT = `👋 أهلاً بك في *بوت دليفري طنطا*
 4️⃣ 💊 صيدليات وأدوية طنطا
 5️⃣ 🏪 محلات المنطقة
 6️⃣ 📞 خدمة العملاء
+7️⃣ ⭐ رصيد نقاطي والمشاوير المجانية
 
-👇 أرسل رقم القسم المطلوب (1 - 6):`;
+👇 أرسل رقم القسم المطلوب (1 - 7):`;
 
 const PROMPT_DELIVERY = `🛵 *دليفري وطلبات خاصة*
 
@@ -493,11 +539,22 @@ async function forwardOrderToAdmin(orderId, orderData, imageRelPath) {
     customerDisplay = orderData.phone;
   }
 
+  let milestoneAlert = '';
+  if (orderData.isTantaMilestone) {
+    milestoneAlert += `\n🎁 *تنبيه للمندوب:* هذا العميل يستحق مشوار مجاني من طنطا! (أكمل ${orderData.totalOrders} طلباً)\n`;
+  }
+  if (orderData.isBaladMilestone) {
+    milestoneAlert += `\n🛵🎁 *تنبيه للمندوب:* هذا العميل يستحق مشوار مجاني من البلد! (أكمل ${orderData.deliveryOrders} مشاوير)\n`;
+  }
+
+  const badgeLine = orderData.customerBadge ? `🏷️ التصنيف: ${orderData.customerBadge}\n` : '';
+  const pointsLine = orderData.points !== undefined ? `⭐ نقاط الولاء: ${orderData.points} نقطة\n` : '';
+
   const alertMsg = `🔔 *طلب جديد برقم #${orderId}*
 
 📂 القسم: ${orderData.category}
 ${orderData.restaurant ? `🏪 المطعم: ${orderData.restaurant}\n` : ''}👤 العميل: ${customerDisplay}
-📝 التفاصيل:
+${badgeLine}${pointsLine}${milestoneAlert}📝 التفاصيل:
 ${orderData.details}
 📅 ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}
 📊 الحالة: ⏳ قيد الانتظار (NEW)
@@ -617,22 +674,12 @@ async function handleGroupMessage(msg) {
       if (!validStatuses.includes(newStatus)) {
         return msg.reply(`⚠️ حالة غير صالحة. الحالات المتاحة:\n${validStatuses.join(', ')}`);
       }
-      const order = stmts.getOrder.get(orderId);
-      if (!order) {
+      const resUpdate = await updateOrderAndNotify(orderId, newStatus);
+      if (!resUpdate.success) {
         return msg.reply(`⚠️ لم يتم العثور على الطلب #${orderId}.`);
       }
-      stmts.updateOrderStatus.run(newStatus, orderId);
       const label = STATUS_LABELS[newStatus] || newStatus;
       await msg.reply(`✅ تم تحديث حالة الطلب #${orderId} إلى: ${label}`);
-
-      // إشعار العميل مباشرة
-      const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
-      if (custTarget) {
-        const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
-        if (notifyFn) {
-          client.sendMessage(custTarget, notifyFn(orderId)).catch(() => {});
-        }
-      }
       return;
     }
 
@@ -879,24 +926,12 @@ client.on('message', async (msg) => {
         if (!validStatuses.includes(newStatus)) {
           return msg.reply(`⚠️ حالة غير صالحة. الحالات المتاحة:\n${validStatuses.join(', ')}`);
         }
-        const order = stmts.getOrder.get(orderId);
-        if (!order) {
+        const resUpdate = await updateOrderAndNotify(orderId, newStatus);
+        if (!resUpdate.success) {
           return msg.reply(`⚠️ لم يتم العثور على الطلب #${orderId}.`);
         }
-        stmts.updateOrderStatus.run(newStatus, orderId);
         const label = STATUS_LABELS[newStatus] || newStatus;
         await msg.reply(`✅ تم تحديث حالة الطلب #${orderId} إلى: ${label}`);
-
-        // Notify customer directly
-        const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
-        if (custTarget) {
-          const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
-          if (notifyFn) {
-            client.sendMessage(custTarget, notifyFn(orderId)).catch((err) => {
-              console.error(`فشل إشعار العميل:`, err.message);
-            });
-          }
-        }
         return;
       }
 
@@ -923,6 +958,21 @@ client.on('message', async (msg) => {
       stmts.resetUser.run(chatJid);
       stmts.setState.run('WAITING_CATEGORY', chatJid);
       return msg.reply(MAIN_MENU_TEXT);
+    }
+
+    // استعلام رصيد نقاط الولاء والمشاوير المجانية
+    if (['نقاطي', 'رصيدي', '/points', '/wallet', 'نقاط', 'النقاط'].includes(lower)) {
+      const loyalty = getCustomerLoyaltyInfo(chatJid, resolvedPhone);
+      const ms = calculateMilestones(loyalty.total, loyalty.delivery);
+      const reply = `⭐ *نقاط الولاء والمشاوير المجانية* ⭐\n\n`
+        + `💰 رصيد نقاطك: *${loyalty.points}* نقطة\n`
+        + `📦 إجمالي طلباتك الناجحة: *${loyalty.total}* طلب\n`
+        + `🛵 طلبات الدليفري: *${loyalty.delivery}* مشوار\n\n`
+        + `🎁 *المشاوير المجانية القادمة:*\n`
+        + `• طنطا: باقي لك *${ms.remTanta}* طلبات لمشوار مجاني من طنطا 🎁\n`
+        + `• البلد: باقي لك *${ms.remBalad}* مشاوير لمشوار مجاني من البلد 🛵🎁\n\n`
+        + `💡 تكسب *${POINTS_PER_ORDER}* نقاط ولاء مع كل طلب تؤكده!`;
+      return msg.reply(reply);
     }
 
     // 1. 'IDLE' state
@@ -977,6 +1027,22 @@ client.on('message', async (msg) => {
       if (text === '6' || lower.includes('خدمة') || lower.includes('دعم')) {
         stmts.resetUser.run(chatJid);
         return msg.reply(PROMPT_SUPPORT);
+      }
+
+      // Option 7: رصيد نقاطي والمشاوير المجانية
+      if (text === '7' || lower.includes('نقاط') || lower.includes('رصيد')) {
+        const loyalty = getCustomerLoyaltyInfo(chatJid, resolvedPhone);
+        const ms = calculateMilestones(loyalty.total, loyalty.delivery);
+        const reply = `⭐ *نقاط الولاء والمشاوير المجانية* ⭐\n\n`
+          + `💰 رصيد نقاطك: *${loyalty.points}* نقطة\n`
+          + `📦 إجمالي طلباتك الناجحة: *${loyalty.total}* طلب\n`
+          + `🛵 طلبات الدليفري: *${loyalty.delivery}* مشوار\n\n`
+          + `🎁 *المشاوير المجانية القادمة:*\n`
+          + `• طنطا: باقي لك *${ms.remTanta}* طلبات لمشوار مجاني من طنطا 🎁\n`
+          + `• البلد: باقي لك *${ms.remBalad}* مشاوير لمشوار مجاني من البلد 🛵🎁\n\n`
+          + `💡 تكسب *${POINTS_PER_ORDER}* نقاط ولاء مع كل طلب تؤكده!\n\n`
+          + `أرسل رقم القسم للطلب (1 - 6) أو /start للعودة للقائمة:`;
+        return msg.reply(reply);
       }
 
       return msg.reply(`⚠️ اختيار غير صحيح.\n\n${MAIN_MENU_TEXT}`);
@@ -1071,6 +1137,15 @@ client.on('message', async (msg) => {
       // 1: Confirm
       if (['1', 'أكد', 'اكد', 'تأكيد', 'تاكيد', 'نعم', 'تمام', 'موافق', 'ok'].includes(lower)) {
         const phoneToStore = resolvedPhone || contactInfo.name || 'عميل واتساب';
+
+        // 1. حساب إحصائيات وتصنيف العميل قبل إضافة الطلب
+        const prevStats = getCustomerLoyaltyInfo(chatJid, resolvedPhone);
+        const isReturning = prevStats.total > 0;
+        const customerBadge = isReturning
+          ? `عميل سابق 🌟 (إجمالي طلباته: ${prevStats.total + 1})`
+          : `عميل جديد 🆕`;
+
+        // 2. تسجيل الطلب في قاعدة البيانات
         const result = stmts.insertOrder.run(
           phoneToStore,
           user.selected_category,
@@ -1081,8 +1156,33 @@ client.on('message', async (msg) => {
         );
         const orderId = result.lastInsertRowid;
 
+        // 3. إضافة نقاط الولاء لحساب العميل
+        stmts.addPoints.run(POINTS_PER_ORDER, chatJid);
+        const updatedPoints = (stmts.getUserPoints.get(chatJid)?.points) || 0;
+
+        // 4. حساب أهداف المشاوير المجانية
+        const isDeliveryCat = (user.selected_category || '').includes('دليفري');
+        const newTotal = prevStats.total + 1;
+        const newDelivery = prevStats.delivery + (isDeliveryCat ? 1 : 0);
+        const milestones = calculateMilestones(newTotal, newDelivery);
+
+        let milestoneLines = [];
+        if (milestones.isTantaMilestone) {
+          milestoneLines.push(`🎉 *مبروك! طلبك الحالي مؤهل لـ "مشوار مجاني من طنطا 🎁"!*`);
+        } else {
+          milestoneLines.push(`🎁 *هدية طنطا:* باقي لك ${milestones.remTanta} طلبات للحصول على مشوار مجاني من طنطا`);
+        }
+
+        if (milestones.isBaladMilestone) {
+          milestoneLines.push(`🎉 *مبروك! استحققت "مشوار مجاني من البلد 🛵🎁"!*`);
+        } else {
+          milestoneLines.push(`🛵 *هدية البلد:* باقي لك ${milestones.remBalad} مشاوير للحصول على مشوار مجاني من البلد`);
+        }
+
         const confirmMsg = `✅ *تم تأكيد طلبك بنجاح!*\n\n`
           + `🔖 رقم طلبك: *#${orderId}*\n`
+          + `⭐ حصلت على *+${POINTS_PER_ORDER}* نقطة ولاء! (رصيدك الحالي: *${updatedPoints}* نقطة)\n`
+          + milestoneLines.join('\n') + `\n\n`
           + `سيتواصل معك فريقنا قريباً لتنفيذ وتوصيل الطلب. شكراً لك! 🙏`;
         await msg.reply(confirmMsg);
 
@@ -1095,6 +1195,12 @@ client.on('message', async (msg) => {
             category: user.selected_category,
             restaurant: user.selected_restaurant,
             details: user.pending_details,
+            customerBadge,
+            points: updatedPoints,
+            isTantaMilestone: milestones.isTantaMilestone,
+            isBaladMilestone: milestones.isBaladMilestone,
+            totalOrders: newTotal,
+            deliveryOrders: newDelivery,
           },
           user.pending_image
         );

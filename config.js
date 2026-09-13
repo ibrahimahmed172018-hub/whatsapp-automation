@@ -41,12 +41,15 @@ const STATUS_LABELS = {
   cancelled:  '❌ ملغي / اعتذار',
 };
 
+// نقاط الولاء لكل طلب مؤكد
+const POINTS_PER_ORDER = parseInt(process.env.POINTS_PER_ORDER || '10', 10);
+
 // رسائل الإشعار الفورية للعميل عند تحديث حالة طلبه
 const CUSTOMER_STATUS_NOTIFICATIONS = {
   accepted:   (id) => `🛵 *تحديث بخصوص طلبك #${id}:*\nتم قبول طلبك وجاري تجهيزه حالياً من قبل المندوب! 💨`,
   delivering: (id) => `🚀 *تحديث بخصوص طلبك #${id}:*\nالمندوب استلم طلبك وهو في الطريق إليك الآن! 🛵💨`,
   completed:  (id) => `🎉 *تم تسليم طلبك #${id} بنجاح!*\nشكراً لتعاملك معنا في دليفري طنطا، نسعد بخدمتك دائماً! 🙏❤️`,
-  cancelled:  (id) => `❌ *نعتذر منك بخصوص طلبك #${id}:*\nتم إلغاء الطلب حالياً. للتفاصيل أو المساعدة تواصل معنا عبر خدمة العملاء.`,
+  cancelled:  (id, ptsDeducted) => `❌ *نعتذر منك بخصوص طلبك #${id}:*\nتم إلغاء الطلب حالياً${ptsDeducted ? `، وتم خصم ${ptsDeducted} نقاط ولاء من رصيدك` : ''}. للتفاصيل أو المساعدة تواصل معنا عبر خدمة العملاء.`,
 };
 
 module.exports = {
@@ -55,6 +58,7 @@ module.exports = {
   ADMIN_PIN,
   DB_PATH,
   PORT,
+  POINTS_PER_ORDER,
   STATUS_LABELS,
   CUSTOMER_STATUS_NOTIFICATIONS,
 };

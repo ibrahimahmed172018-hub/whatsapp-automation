@@ -424,6 +424,10 @@
         const customerPhone = (o.phone && /^\d+$/.test(o.phone)) ? `+${o.phone}` : (o.phone || 'عميل');
         const driverPhone = o.driver_phone ? (o.driver_phone.startsWith('+') || !/^\d+$/.test(o.driver_phone) ? o.driver_phone : `+${o.driver_phone}`) : 'لم يُقبل بعد';
 
+        const totalOrders = Number(o.customer_total_orders || 0);
+        const customerBadge = totalOrders > 1 ? `عميل سابق 🌟 (${totalOrders})` : (totalOrders === 1 ? 'عميل جديد 🆕' : 'عميل واتساب');
+        const points = Number(o.customer_points || 0);
+
         const imageHtml = o.image_url ? `<a href="${o.image_url}" target="_blank"><img src="${o.image_url}" class="img-thumb" title="عرض الصورة"></a>` : '';
 
         return `
@@ -434,7 +438,13 @@
               <div><strong>${o.category || ''}</strong></div>
               ${o.restaurant ? `<div style="font-size: 12px; color: var(--primary);">${o.restaurant}</div>` : ''}
             </td>
-            <td>${customerPhone}</td>
+            <td>
+              <div><strong>${customerPhone}</strong></div>
+              <div style="font-size: 11px; margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap;">
+                <span style="background: rgba(37,211,102,0.12); color: var(--primary); padding: 1px 6px; border-radius: 4px; font-weight: 500;">${customerBadge}</span>
+                <span style="background: rgba(245,158,11,0.12); color: var(--warning); padding: 1px 6px; border-radius: 4px; font-weight: 500;">⭐ ${points} نقطة</span>
+              </div>
+            </td>
             <td style="font-size: 13px;">${driverPhone}</td>
             <td>
               <div style="max-width: 260px; line-height: 1.4;">${o.details || ''}</div>
