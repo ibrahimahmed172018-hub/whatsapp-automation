@@ -4,12 +4,14 @@ ENV TZ=Africa/Cairo
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV DATA_PATH=/data
 
 # Layer 1: OS Dependencies & Chromium (cached by Docker)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata chromium python3 make g++ sqlite3 \
     && ln -fs /usr/share/zoneinfo/Africa/Cairo /etc/localtime \
     && dpkg-reconfigure -f noninteractive tzdata \
+    && mkdir -p /data \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

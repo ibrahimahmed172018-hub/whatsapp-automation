@@ -1,6 +1,23 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 const { DB_PATH, ADMIN_PHONE } = require('./config');
+
+// إذا كانت قاعدة البيانات في مكان محلي وDB_PATH في مسار دائم جديد، انسخها
+const localDb = path.join(__dirname, 'delivery_bot.db');
+try { fs.mkdirSync(path.dirname(DB_PATH), { recursive: true }); } catch {}
+if (path.resolve(DB_PATH) !== path.resolve(localDb) && !fs.existsSync(DB_PATH) && fs.existsSync(localDb)) {
+  try {
+    fs.copyFileSync(localDb, DB_PATH);
+    const localWal = path.join(__dirname, 'delivery_bot.db-wal');
+    if (fs.existsSync(localWal)) {
+      try { fs.copyFileSync(localWal, DB_PATH + '-wal'); } catch {}
+    }
+    console.log(`📦 تم ترحيل قاعدة البيانات إلى المسار الدائم: ${DB_PATH}`);
+  } catch (e) {
+    console.error('فشل ترحيل قاعدة البيانات:', e.message);
+  }
+}
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -38,6 +55,7 @@ CREATE TABLE IF NOT EXISTS orders (
   details TEXT,
   image_url TEXT,
   driver_phone TEXT DEFAULT NULL,
+  chat_jid TEXT DEFAULT NULL,
   status TEXT DEFAULT 'NEW',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -56,6 +74,9 @@ CREATE TABLE IF NOT EXISTS settings (
 
 try {
   db.exec('ALTER TABLE orders ADD COLUMN driver_phone TEXT DEFAULT NULL;');
+} catch {}
+try {
+  db.exec('ALTER TABLE orders ADD COLUMN chat_jid TEXT DEFAULT NULL;');
 } catch {}
 
 // Seed default restaurants
@@ -98,7 +119,7 @@ const stmts = {
   countRestaurants: db.prepare('SELECT COUNT(*) as total FROM restaurants'),
 
   // Orders
-  insertOrder: db.prepare(`INSERT INTO orders (phone, category, restaurant, details, image_url, status) VALUES (?, ?, ?, ?, ?, 'NEW')`),
+  insertOrder: db.prepare(`INSERT INTO orders (phone, category, restaurant, details, image_url, chat_jid, status) VALUES (?, ?, ?, ?, ?, ?, 'NEW')`),
   getOrder: db.prepare('SELECT * FROM orders WHERE id = ?'),
   updateOrderStatus: db.prepare('UPDATE orders SET status = ? WHERE id = ?'),
   acceptOrder: db.prepare("UPDATE orders SET status = 'accepted', driver_phone = ? WHERE id = ?"),

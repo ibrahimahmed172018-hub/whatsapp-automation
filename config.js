@@ -1,7 +1,33 @@
 require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
+
+function getWritableDataDir() {
+  if (process.env.DATA_PATH) {
+    try {
+      fs.mkdirSync(process.env.DATA_PATH, { recursive: true });
+      fs.accessSync(process.env.DATA_PATH, fs.constants.W_OK);
+      return process.env.DATA_PATH;
+    } catch (e) {}
+  }
+  if (fs.existsSync('/data')) {
+    try {
+      fs.accessSync('/data', fs.constants.W_OK);
+      return '/data';
+    } catch (e) {}
+  }
+  const localDir = path.join(__dirname, 'data');
+  try {
+    fs.mkdirSync(localDir, { recursive: true });
+  } catch (e) {}
+  return localDir;
+}
+
+// المسار الدائم للبيانات وجلسة الواتساب (Railway Volume Support)
+const DATA_DIR = getWritableDataDir();
 
 const ADMIN_PHONE = process.env.ADMIN_PHONE || '01143264206';
-const DB_PATH = process.env.DB_PATH || './delivery_bot.db';
+const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'delivery_bot.db');
 const PORT = process.env.PORT || 3000;
 
 // تسميات حالات الطلب
@@ -23,6 +49,7 @@ const CUSTOMER_STATUS_NOTIFICATIONS = {
 };
 
 module.exports = {
+  DATA_DIR,
   ADMIN_PHONE,
   DB_PATH,
   PORT,

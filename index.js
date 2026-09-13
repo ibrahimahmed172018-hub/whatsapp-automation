@@ -4,18 +4,43 @@ const express = require('express');
 const qrcode = require('qrcode');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 
-const { PORT, ADMIN_PHONE, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS } = require('./config');
+const { PORT, ADMIN_PHONE, STATUS_LABELS, CUSTOMER_STATUS_NOTIFICATIONS, DATA_DIR } = require('./config');
 const { stmts } = require('./db');
 
 // ─── Express App & Uploads Setup ─────────────────────────────────────────────
 
 const app = express();
-const uploadsDir = path.join(__dirname, 'public/uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+
+// المسارات الدائمة للبيانات وجلسة الواتساب (Railway Volume Support)
+const targetAuthDir = path.join(DATA_DIR, '.wwebjs_auth');
+const targetUploadsDir = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(targetUploadsDir)) {
+  try { fs.mkdirSync(targetUploadsDir, { recursive: true }); } catch {}
 }
 
-app.use('/uploads', express.static(uploadsDir));
+// ترحيل الجلسة والملفات القديمة إن وجدت محلياً
+const localAuthDir = path.join(__dirname, '.wwebjs_auth');
+if (path.resolve(localAuthDir) !== path.resolve(targetAuthDir) && !fs.existsSync(targetAuthDir) && fs.existsSync(localAuthDir)) {
+  try {
+    fs.cpSync(localAuthDir, targetAuthDir, { recursive: true });
+    console.log(`📦 تم ترحيل جلسة واتساب إلى المسار الدائم: ${targetAuthDir}`);
+  } catch (e) {}
+}
+
+const localUploadsDir = path.join(__dirname, 'public/uploads');
+if (path.resolve(localUploadsDir) !== path.resolve(targetUploadsDir) && fs.existsSync(localUploadsDir)) {
+  try {
+    const files = fs.readdirSync(localUploadsDir);
+    for (const f of files) {
+      const src = path.join(localUploadsDir, f);
+      const dst = path.join(targetUploadsDir, f);
+      if (!fs.existsSync(dst)) fs.copyFileSync(src, dst);
+    }
+  } catch (e) {}
+}
+
+app.use('/uploads', express.static(targetUploadsDir));
+app.use('/uploads', express.static(localUploadsDir));
 app.use(express.json());
 
 let latestQR = null;
@@ -120,7 +145,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 // ─── WhatsApp Client Setup ───────────────────────────────────────────────────
 
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({
+    dataPath: targetAuthDir
+  }),
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -235,30 +262,96 @@ function normalizeDigits(text) {
   return text.replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d).toString());
 }
 
-function normalizePhone(p) {
-  if (!p) return '';
-  let clean = p.replace(/[^0-9]/g, '');
-  if (clean.startsWith('0')) clean = '20' + clean.slice(1);
+function cleanPhoneNumber(str) {
+  if (!str) return '';
+  if (typeof str !== 'string') str = String(str);
+  if (str.toLowerCase().includes('lid')) return '';
+  let clean = str.replace(/[^0-9]/g, '');
+  if (clean.startsWith('01') && clean.length === 11) {
+    clean = '20' + clean.slice(1);
+  } else if (clean.startsWith('0') && clean.length === 11) {
+    clean = '20' + clean.slice(1);
+  }
+  if (clean.length < 9 || clean.length > 15) return '';
   return clean;
+}
+
+function normalizePhone(p) {
+  return cleanPhoneNumber(p);
 }
 
 function isAdmin(phone, user) {
   if (user && user.is_admin === 1) return true;
-  const adminTarget = normalizePhone(ADMIN_PHONE);
-  const senderPhone = normalizePhone(phone);
-  return senderPhone === adminTarget;
+  const adminTarget = cleanPhoneNumber(ADMIN_PHONE);
+  const senderPhone = cleanPhoneNumber(phone);
+  return !!(adminTarget && senderPhone && senderPhone === adminTarget);
 }
 
 function getAdminJid() {
-  const norm = normalizePhone(ADMIN_PHONE);
-  return `${norm}@c.us`;
+  const norm = cleanPhoneNumber(ADMIN_PHONE);
+  return norm ? `${norm}@c.us` : null;
+}
+
+/**
+ * استخراج بيانات الاتصال الحقيقية (الرقم والاسم) وتفادي ظهور معرفات LID
+ */
+async function resolveContactInfo(client, msg, specificJid = null) {
+  const jid = specificJid || msg?.author || msg?.participant || msg?.from || '';
+  let phone = '';
+  let name = '';
+
+  // 1. إذا كان المعرف ينتهي بـ @c.us مباشرة
+  if (jid && jid.includes('@c.us')) {
+    const rawUser = jid.split('@')[0];
+    const cleaned = cleanPhoneNumber(rawUser);
+    if (cleaned) phone = cleaned;
+  }
+
+  // 2. محاولة جلب جهة الاتصال من واتساب
+  try {
+    const contact = (msg && !specificJid) ? await msg.getContact() : (jid ? await client.getContactById(jid) : null);
+    if (contact) {
+      name = contact.pushname || contact.name || '';
+      if (!phone && contact.number) {
+        const cleaned = cleanPhoneNumber(contact.number);
+        if (cleaned) phone = cleaned;
+      }
+    }
+  } catch (err) {}
+
+  // 3. في حالة معرفات LID: استخدام دالة getContactLidAndPhone الداخلية لواتساب ويب
+  if (!phone && jid && typeof client.getContactLidAndPhone === 'function') {
+    try {
+      const res = await client.getContactLidAndPhone([jid]);
+      if (Array.isArray(res) && res[0] && res[0].pn) {
+        const pnDigits = res[0].pn.split('@')[0];
+        const cleaned = cleanPhoneNumber(pnDigits);
+        if (cleaned) phone = cleaned;
+      }
+    } catch (err) {}
+  }
+
+  return {
+    phone,
+    name: (name || '').trim(),
+    jid
+  };
 }
 
 async function forwardOrderToAdmin(orderId, orderData, imageRelPath) {
+  let customerDisplay = 'عميل واتساب';
+  if (orderData.phone && /^\d+$/.test(orderData.phone)) {
+    customerDisplay = `+${orderData.phone}${orderData.name ? ` (${orderData.name})` : ''}`;
+  } else if (orderData.name) {
+    customerDisplay = orderData.name;
+  } else if (orderData.phone) {
+    customerDisplay = orderData.phone;
+  }
+
   const alertMsg = `🔔 *طلب جديد برقم #${orderId}*
 
 📂 القسم: ${orderData.category}
-${orderData.restaurant ? `🏪 المطعم: ${orderData.restaurant}\n` : ''}👤 هاتف العميل: +${orderData.phone}
+${orderData.restaurant ? `🏪 المطعم: ${orderData.restaurant}\n` : ''}👤 العميل: ${customerDisplay}
 📝 التفاصيل:
 ${orderData.details}
 📅 ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}
@@ -281,7 +374,10 @@ ${orderData.details}
   for (const target of targets) {
     try {
       if (imageRelPath) {
-        const fullPath = path.join(__dirname, 'public', imageRelPath.replace(/^\//, ''));
+        let fullPath = path.join(targetUploadsDir, path.basename(imageRelPath));
+        if (!fs.existsSync(fullPath)) {
+          fullPath = path.join(__dirname, 'public', imageRelPath.replace(/^\//, ''));
+        }
         if (fs.existsSync(fullPath)) {
           const media = MessageMedia.fromFilePath(fullPath);
           await client.sendMessage(target, media, { caption: alertMsg });
@@ -303,10 +399,6 @@ async function handleGroupMessage(msg) {
     const text = normalizeDigits(rawText);
     const lower = text.toLowerCase();
     const groupId = msg.from;
-
-    // Extract sender phone in group
-    const senderJid = msg.author || msg.participant || '';
-    const senderPhone = normalizePhone(senderJid);
 
     // 1. Command to set/register this group as the drivers group
     if (
@@ -357,7 +449,7 @@ async function handleGroupMessage(msg) {
     }
 
     if (order.status !== 'NEW' && order.status !== 'pending') {
-      const currentDriver = order.driver_phone ? `+${order.driver_phone}` : 'مندوب آخر';
+      const currentDriver = order.driver_phone ? (order.driver_phone.startsWith('+') || !/^\d+$/.test(order.driver_phone) ? order.driver_phone : `+${order.driver_phone}`) : 'مندوب آخر';
       const statusLabel = STATUS_LABELS[order.status] || order.status;
       await msg.reply(
         `⚠️ عذراً، الطلب #${targetOrderId} تم قبوله بالفعل مسبقاً بواسطة: *${currentDriver}*\n`
@@ -366,14 +458,26 @@ async function handleGroupMessage(msg) {
       return;
     }
 
-    const driverNumber = senderPhone || 'غير معروف';
-    stmts.acceptOrder.run(driverNumber, targetOrderId);
+    // استخراج بيانات المندوب وحل رقم الهاتف بدون ظهور lid
+    const senderJid = msg.author || msg.participant || msg.from;
+    const driverInfo = await resolveContactInfo(client, msg, senderJid);
+    const driverDisplay = driverInfo.phone
+      ? `+${driverInfo.phone}${driverInfo.name ? ` (${driverInfo.name})` : ''}`
+      : (driverInfo.name || 'مندوب');
+    const driverRecord = driverInfo.phone || driverInfo.name || 'مندوب';
+
+    stmts.acceptOrder.run(driverRecord, targetOrderId);
+
+    // بيانات تواصل العميل
+    const customerDisplay = (order.phone && /^\d+$/.test(order.phone))
+      ? `+${order.phone}`
+      : (order.phone || 'عميل واتساب');
 
     // 1. Confirmation to the couriers group
     const groupAlert = `🛵 *تم قبول الطلب #${targetOrderId} بنجاح!*
 ━━━━━━━━━━━━━━━━━
-👤 *المندوب المسؤول:* +${driverNumber}
-📞 *هاتف العميل للتواصل:* +${order.phone}
+👤 *المندوب المسؤول:* ${driverDisplay}
+📞 *تواصل العميل:* ${customerDisplay}
 ${order.restaurant ? `🏪 *المطعم:* ${order.restaurant}\n` : ''}📂 *القسم:* ${order.category}
 📝 *التفاصيل:*
 ${order.details}
@@ -382,19 +486,19 @@ ${order.details}
     await msg.reply(groupAlert);
 
     // 2. Notify the customer directly on WhatsApp
-    if (order.phone) {
-      const custJid = `${normalizePhone(order.phone)}@c.us`;
+    const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
+    if (custTarget) {
       const custMsg = `🛵 *تحديث بخصوص طلبك #${targetOrderId}:*\n`
-        + `تم قبول طلبك بواسطة المندوب (+${driverNumber}) وجاري تجهيزه وتوصيله إليك الآن! 💨`;
-      client.sendMessage(custJid, custMsg).catch((err) => {
-        console.error(`فشل إشعار العميل ${order.phone}:`, err.message);
+        + `تم قبول طلبك بواسطة المندوب (${driverDisplay}) وجاري تجهيزه وتوصيله إليك الآن! 💨`;
+      client.sendMessage(custTarget, custMsg).catch((err) => {
+        console.error(`فشل إشعار العميل:`, err.message);
       });
     }
 
     // 3. Notify Admin if configured and not the same driver
-    const adminTarget = normalizePhone(ADMIN_PHONE);
-    if (adminTarget && adminTarget !== driverNumber) {
-      const adminNotify = `📢 *إشعار للإدارة:* قام المندوب (+${driverNumber}) بقبول الطلب #${targetOrderId}.`;
+    const adminTarget = cleanPhoneNumber(ADMIN_PHONE);
+    if (adminTarget && adminTarget !== driverInfo.phone) {
+      const adminNotify = `📢 *إشعار للإدارة:* قام المندوب (${driverDisplay}) بقبول الطلب #${targetOrderId}.`;
       client.sendMessage(`${adminTarget}@c.us`, adminNotify).catch(() => {});
     }
   } catch (err) {
@@ -423,13 +527,18 @@ client.on('message', async (msg) => {
       return;
     }
 
-    const phone = msg.from.replace('@c.us', '').replace('@s.whatsapp.net', '');
-    stmts.upsertUser.run(phone);
-    const user = stmts.getUser.get(phone);
+    // محادثات فردية (العملاء أو الإدارة)
+    const chatJid = msg.from;
+    const contactInfo = await resolveContactInfo(client, msg, chatJid);
+    const resolvedPhone = contactInfo.phone || '';
 
-    const isSenderAdmin = isAdmin(phone, user);
+    // حفظ واسترجاع حالة المحادثة باستخدام chatJid
+    stmts.upsertUser.run(chatJid);
+    const user = stmts.getUser.get(chatJid);
+
+    const isSenderAdmin = isAdmin(resolvedPhone, user);
     if (isSenderAdmin && user.is_admin !== 1) {
-      stmts.setAdmin.run(1, phone);
+      stmts.setAdmin.run(1, chatJid);
     }
 
     const rawText = msg.body?.trim() || '';
@@ -444,14 +553,14 @@ client.on('message', async (msg) => {
         if (!restName) {
           return msg.reply('⚠️ يرجى كتابة اسم المطعم مع الأمر:\nمثال: /add_restaurant كريب لافير');
         }
-        stmts.setSelectedRestaurant.run(restName, 'ADMIN_WAITING_MENU_IMAGE', phone);
+        stmts.setSelectedRestaurant.run(restName, 'ADMIN_WAITING_MENU_IMAGE', chatJid);
         return msg.reply(`📸 أرسل الآن صورة منيو مطعم "${restName}":`);
       }
 
       // Handler for 'ADMIN_WAITING_MENU_IMAGE' state
       if (user.state === 'ADMIN_WAITING_MENU_IMAGE') {
         if (lower === '/cancel' || lower === 'الغاء' || lower === 'إلغاء') {
-          stmts.resetUser.run(phone);
+          stmts.resetUser.run(chatJid);
           return msg.reply('❌ تم إلغاء إضافة المطعم.');
         }
 
@@ -461,12 +570,12 @@ client.on('message', async (msg) => {
             const mime = media.mimetype || 'image/jpeg';
             const ext = mime.split('/')[1]?.split(';')[0] || 'jpg';
             const fileName = `menu_${Date.now()}.${ext}`;
-            const destPath = path.join(uploadsDir, fileName);
+            const destPath = path.join(targetUploadsDir, fileName);
             fs.writeFileSync(destPath, Buffer.from(media.data, 'base64'));
             const menuUrl = `/uploads/${fileName}`;
             const restName = user.selected_restaurant || 'مطعم جديد';
             stmts.insertRestaurant.run(restName, menuUrl);
-            stmts.resetUser.run(phone);
+            stmts.resetUser.run(chatJid);
             return msg.reply(`✅ تم بنجاح إضافة مطعم "${restName}" مع صورة المنيو! 📸🍔`);
           }
         }
@@ -511,9 +620,11 @@ client.on('message', async (msg) => {
         let reply = `📦 *آخر 10 طلبات مسجلة:*\n━━━━━━━━━━━━━━━━━\n`;
         for (const o of orders) {
           const statusLabel = STATUS_LABELS[o.status] || o.status;
+          const custDisp = (o.phone && /^\d+$/.test(o.phone)) ? `+${o.phone}` : (o.phone || 'عميل واتساب');
+          const driverDisp = o.driver_phone ? (o.driver_phone.startsWith('+') || !/^\d+$/.test(o.driver_phone) ? o.driver_phone : `+${o.driver_phone}`) : null;
           reply += `🔖 *طلب #${o.id}* | ${o.category}${o.restaurant ? ` (${o.restaurant})` : ''}\n`
-            + `👤 العميل: +${o.phone}\n`
-            + (o.driver_phone ? `🛵 المندوب: +${o.driver_phone}\n` : '')
+            + `👤 العميل: ${custDisp}\n`
+            + (driverDisp ? `🛵 المندوب: ${driverDisp}\n` : '')
             + `📊 الحالة: ${statusLabel}\n`
             + `📅 ${o.created_at}\n`
             + `📝 التفاصيل: ${o.details}\n`
@@ -543,13 +654,13 @@ client.on('message', async (msg) => {
         const label = STATUS_LABELS[newStatus] || newStatus;
         await msg.reply(`✅ تم تحديث حالة الطلب #${orderId} إلى: ${label}`);
 
-        // Notify customer
-        if (order.phone) {
-          const custJid = `${normalizePhone(order.phone)}@c.us`;
+        // Notify customer directly
+        const custTarget = order.chat_jid || (order.phone && /^\d+$/.test(order.phone) ? `${order.phone}@c.us` : null);
+        if (custTarget) {
           const notifyFn = CUSTOMER_STATUS_NOTIFICATIONS[newStatus];
           if (notifyFn) {
-            client.sendMessage(custJid, notifyFn(orderId)).catch((err) => {
-              console.error(`فشل إشعار العميل ${order.phone}:`, err.message);
+            client.sendMessage(custTarget, notifyFn(orderId)).catch((err) => {
+              console.error(`فشل إشعار العميل:`, err.message);
             });
           }
         }
@@ -576,14 +687,14 @@ client.on('message', async (msg) => {
 
     // Command to restart or return to main menu
     if (['/start', 'start', 'menu', 'القائمة', 'قائمة', 'ابدأ', 'ابدا', 'الرئيسية'].includes(lower)) {
-      stmts.resetUser.run(phone);
-      stmts.setState.run('WAITING_CATEGORY', phone);
+      stmts.resetUser.run(chatJid);
+      stmts.setState.run('WAITING_CATEGORY', chatJid);
       return msg.reply(MAIN_MENU_TEXT);
     }
 
     // 1. 'IDLE' state
     if (user.state === 'IDLE') {
-      stmts.setState.run('WAITING_CATEGORY', phone);
+      stmts.setState.run('WAITING_CATEGORY', chatJid);
       return msg.reply(MAIN_MENU_TEXT);
     }
 
@@ -591,16 +702,16 @@ client.on('message', async (msg) => {
     if (user.state === 'WAITING_CATEGORY') {
       // Option 1: دليفري وطلبات خاصة
       if (text === '1' || lower.includes('دليفري')) {
-        stmts.setSelectedCategory.run('🛵 دليفري وطلبات خاصة', 'WAITING_DETAILS', phone);
+        stmts.setSelectedCategory.run('🛵 دليفري وطلبات خاصة', 'WAITING_DETAILS', chatJid);
         return msg.reply(PROMPT_DELIVERY);
       }
 
       // Option 2: مطاعم طنطا
       if (text === '2' || lower.includes('مطاعم') || lower.includes('مطعم')) {
-        stmts.setSelectedCategory.run('🍔 مطاعم طنطا', 'WAITING_RESTAURANT_CHOICE', phone);
+        stmts.setSelectedCategory.run('🍔 مطاعم طنطا', 'WAITING_RESTAURANT_CHOICE', chatJid);
         const rests = stmts.getRestaurants.all();
         if (rests.length === 0) {
-          stmts.setState.run('WAITING_DETAILS', phone);
+          stmts.setState.run('WAITING_DETAILS', chatJid);
           return msg.reply('🍔 *مطاعم طنطا*\n\nاكتب اسم المطعم والأصناف المطلوبة وعنوان التوصيل:');
         }
         let restListMsg = `🍔 *مطاعم طنطا*\n\nاختر المطعم المطلوب بإرسال رقمه:\n`;
@@ -613,25 +724,25 @@ client.on('message', async (msg) => {
 
       // Option 3: تسوق من طنطا
       if (text === '3' || lower.includes('تسوق')) {
-        stmts.setSelectedCategory.run('🛒 تسوق من طنطا', 'WAITING_DETAILS', phone);
+        stmts.setSelectedCategory.run('🛒 تسوق من طنطا', 'WAITING_DETAILS', chatJid);
         return msg.reply(PROMPT_SHOPPING);
       }
 
       // Option 4: صيدليات وأدوية طنطا
       if (text === '4' || lower.includes('صيدلي') || lower.includes('دواء') || lower.includes('روشتة')) {
-        stmts.setSelectedCategory.run('💊 صيدليات وأدوية طنطا', 'WAITING_DETAILS', phone);
+        stmts.setSelectedCategory.run('💊 صيدليات وأدوية طنطا', 'WAITING_DETAILS', chatJid);
         return msg.reply(PROMPT_PHARMACY);
       }
 
       // Option 5: محلات المنطقة
       if (text === '5' || lower.includes('محلات') || lower.includes('محل')) {
-        stmts.setSelectedCategory.run('🏪 محلات المنطقة', 'WAITING_DETAILS', phone);
+        stmts.setSelectedCategory.run('🏪 محلات المنطقة', 'WAITING_DETAILS', chatJid);
         return msg.reply(PROMPT_SHOPS);
       }
 
       // Option 6: خدمة العملاء
       if (text === '6' || lower.includes('خدمة') || lower.includes('دعم')) {
-        stmts.resetUser.run(phone);
+        stmts.resetUser.run(chatJid);
         return msg.reply(PROMPT_SUPPORT);
       }
 
@@ -653,7 +764,7 @@ client.on('message', async (msg) => {
         return msg.reply('⚠️ لم يتم العثور على المطعم المطلوب. يرجى إرسال رقم المطعم من القائمة:');
       }
 
-      stmts.setSelectedRestaurant.run(chosen.name, 'WAITING_DETAILS', phone);
+      stmts.setSelectedRestaurant.run(chosen.name, 'WAITING_DETAILS', chatJid);
       const promptText = `🏪 *طلب من: ${chosen.name}* (🍔 مطاعم طنطا)\n\nاكتب تفاصيل طلبك كاملة:\n• الأصناف المطلوبة والكميات\n• عنوان التوصيل بالتفصيل\n• رقم للتواصل (اختياري)`;
 
       if (chosen.menu_url) {
@@ -665,7 +776,10 @@ client.on('message', async (msg) => {
             return msg.reply(`${promptText}\n\n📸 رابط المنيو: ${chosen.menu_url}`);
           }
         } else {
-          const localPath = path.join(__dirname, 'public', chosen.menu_url.replace(/^\//, ''));
+          let localPath = path.join(targetUploadsDir, path.basename(chosen.menu_url));
+          if (!fs.existsSync(localPath)) {
+            localPath = path.join(__dirname, 'public', chosen.menu_url.replace(/^\//, ''));
+          }
           if (fs.existsSync(localPath)) {
             const media = MessageMedia.fromFilePath(localPath);
             return client.sendMessage(msg.from, media, { caption: promptText });
@@ -687,7 +801,7 @@ client.on('message', async (msg) => {
             const mime = media.mimetype || 'image/jpeg';
             const ext = mime.split('/')[1]?.split(';')[0] || 'jpg';
             const fileName = `order_${Date.now()}_${Math.floor(Math.random() * 1000)}.${ext}`;
-            const destPath = path.join(uploadsDir, fileName);
+            const destPath = path.join(targetUploadsDir, fileName);
             fs.writeFileSync(destPath, Buffer.from(media.data, 'base64'));
             imageRelPath = `/uploads/${fileName}`;
           }
@@ -704,7 +818,7 @@ client.on('message', async (msg) => {
         return msg.reply('⚠️ يرجى كتابة تفاصيل الطلب أو إرسال صورة واضحة.');
       }
 
-      stmts.setPendingDetails.run(orderText, imageRelPath, 'WAITING_CONFIRMATION', phone);
+      stmts.setPendingDetails.run(orderText, imageRelPath, 'WAITING_CONFIRMATION', chatJid);
 
       const summary = `📋 *ملخص طلبك:*\n\n`
         + `📂 القسم: ${user.selected_category || 'طلب دليفري'}\n`
@@ -723,12 +837,14 @@ client.on('message', async (msg) => {
     if (user.state === 'WAITING_CONFIRMATION') {
       // 1: Confirm
       if (['1', 'أكد', 'اكد', 'تأكيد', 'تاكيد', 'نعم', 'تمام', 'موافق', 'ok'].includes(lower)) {
+        const phoneToStore = resolvedPhone || contactInfo.name || 'عميل واتساب';
         const result = stmts.insertOrder.run(
-          phone,
+          phoneToStore,
           user.selected_category,
           user.selected_restaurant,
           user.pending_details,
-          user.pending_image
+          user.pending_image,
+          chatJid
         );
         const orderId = result.lastInsertRowid;
 
@@ -740,7 +856,9 @@ client.on('message', async (msg) => {
         await forwardOrderToAdmin(
           orderId,
           {
-            phone,
+            phone: resolvedPhone,
+            name: contactInfo.name,
+            chat_jid: chatJid,
             category: user.selected_category,
             restaurant: user.selected_restaurant,
             details: user.pending_details,
@@ -748,19 +866,19 @@ client.on('message', async (msg) => {
           user.pending_image
         );
 
-        stmts.resetUser.run(phone);
+        stmts.resetUser.run(chatJid);
         return;
       }
 
       // 2: Edit
       if (['2', 'تعديل', 'عدل'].includes(lower)) {
-        stmts.setState.run('WAITING_DETAILS', phone);
+        stmts.setState.run('WAITING_DETAILS', chatJid);
         return msg.reply('✏️ أعد إدخال تفاصيل طلبك:');
       }
 
       // 3: Cancel
       if (['3', 'إلغاء', 'الغاء', 'كنسل', 'لا'].includes(lower)) {
-        stmts.resetUser.run(phone);
+        stmts.resetUser.run(chatJid);
         return msg.reply('❌ تم إلغاء الطلب.');
       }
 
@@ -768,8 +886,8 @@ client.on('message', async (msg) => {
     }
 
     // Fallback: restart
-    stmts.resetUser.run(phone);
-    stmts.setState.run('WAITING_CATEGORY', phone);
+    stmts.resetUser.run(chatJid);
+    stmts.setState.run('WAITING_CATEGORY', chatJid);
     return msg.reply(MAIN_MENU_TEXT);
   } catch (error) {
     console.error('❌ خطأ غير متوقع في معالجة الرسالة:', error);
