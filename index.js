@@ -27,6 +27,26 @@ if (path.resolve(localAuthDir) !== path.resolve(targetAuthDir) && !fs.existsSync
   } catch (e) {}
 }
 
+// تنظيف أقفال كروميوم المتخلفة (Chromium Singleton Locks) لتجنب تجمد المتصفح عند إعادة التشغيل
+function cleanupChromiumLocks(dir) {
+  try {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        cleanupChromiumLocks(fullPath);
+      } else if (entry.name.startsWith('Singleton')) {
+        try {
+          fs.unlinkSync(fullPath);
+          console.log(`🧹 تم مسح قفل كروميوم المعلق: ${fullPath}`);
+        } catch (e) {}
+      }
+    }
+  } catch (err) {}
+}
+cleanupChromiumLocks(targetAuthDir);
+
 const localUploadsDir = path.join(__dirname, 'public/uploads');
 if (path.resolve(localUploadsDir) !== path.resolve(targetUploadsDir) && fs.existsSync(localUploadsDir)) {
   try {
@@ -48,6 +68,8 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 let latestQR = null;
 let isConnected = false;
 let botReadyTime = null;
+let clientInitStartTime = Date.now();
+let lastClientError = null;
 
 // Health Check
 app.get('/', (req, res) => {
@@ -56,6 +78,15 @@ app.get('/', (req, res) => {
 
 // Live QR Web Endpoint
 app.get('/qr', async (req, res) => {
+  if (req.query.retry === '1') {
+    restartClient('manual_user_retry').catch(() => {});
+    return res.redirect('/qr');
+  }
+  if (req.query.reset === '1') {
+    resetSessionAndRestart().catch(() => {});
+    return res.redirect('/qr');
+  }
+
   if (isConnected) {
     return res.send(`
       <!DOCTYPE html>
@@ -65,17 +96,17 @@ app.get('/qr', async (req, res) => {
         <title>WhatsApp Status - Tanta Delivery</title>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 60px 20px; background: #0b141a; color: #e9edef; }
-          .card { max-width: 440px; margin: 0 auto; background: #111b21; padding: 36px 24px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
+          .card { max-width: 460px; margin: 0 auto; background: #111b21; padding: 36px 24px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
           h1 { color: #25d366; font-size: 24px; margin-bottom: 12px; }
-          p { color: #8696a0; font-size: 16px; line-height: 1.6; margin-bottom: 20px; }
-          a { display: inline-block; padding: 10px 20px; background: #00a884; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }
+          p { color: #8696a0; font-size: 16px; line-height: 1.6; margin-bottom: 24px; }
+          .btn { display: inline-block; padding: 12px 24px; background: #00a884; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }
         </style>
       </head>
       <body>
         <div class="card">
           <h1>WhatsApp Connected Successfully ✅</h1>
           <p>بوت دليفري طنطا متصل وجاهز للعمل واستقبال الطلبات على مدار الساعة 🛵💨</p>
-          <a href="/dashboard">الانتقال للوحة التحكم (Dashboard) 🚀</a>
+          <a class="btn" href="/dashboard">الانتقال للوحة التحكم (Dashboard) 🚀</a>
         </div>
       </body>
       </html>
@@ -94,11 +125,15 @@ app.get('/qr', async (req, res) => {
           <title>Scan WhatsApp QR - Tanta Delivery</title>
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 40px 20px; background: #0b141a; color: #e9edef; }
-            .card { max-width: 440px; margin: 0 auto; background: #111b21; padding: 32px 20px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
+            .card { max-width: 460px; margin: 0 auto; background: #111b21; padding: 32px 20px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
             h2 { color: #00a884; font-size: 22px; margin-bottom: 8px; }
             p { color: #8696a0; font-size: 14px; margin-bottom: 20px; }
             img { width: 280px; height: 280px; border-radius: 12px; background: white; padding: 10px; }
             .badge { display: inline-block; background: #202c33; padding: 6px 14px; border-radius: 20px; font-size: 13px; color: #00a884; margin-top: 18px; }
+            .actions { margin-top: 20px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+            .btn { display: inline-block; padding: 8px 16px; border-radius: 8px; text-decoration: none; font-size: 13px; font-weight: 500; }
+            .btn-secondary { background: #202c33; color: #8696a0; }
+            .btn-danger { background: #3b1d1d; color: #ff6b6b; border: 1px solid #5a2a2a; }
           </style>
         </head>
         <body>
@@ -108,6 +143,10 @@ app.get('/qr', async (req, res) => {
             <img src="${qrDataUrl}" alt="WhatsApp QR Code" />
             <br/>
             <div class="badge">🔄 يتم التحديث تلقائياً كل 5 ثوانٍ</div>
+            <div class="actions">
+              <a href="/qr?retry=1" class="btn btn-secondary">⚡ تحديث الرمز</a>
+              <a href="/qr?reset=1" class="btn btn-danger" onclick="return confirm('هل أنت متأكد من مسح الجلسة السابقة والبدء من جديد؟')">🗑️ مسح الجلسة والبدء من جديد</a>
+            </div>
           </div>
         </body>
         </html>
@@ -117,6 +156,7 @@ app.get('/qr', async (req, res) => {
     }
   }
 
+  const elapsedSeconds = Math.floor((Date.now() - clientInitStartTime) / 1000);
   return res.send(`
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
@@ -126,15 +166,29 @@ app.get('/qr', async (req, res) => {
       <title>WhatsApp Starting - Tanta Delivery</title>
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 60px 20px; background: #0b141a; color: #e9edef; }
-        .card { max-width: 440px; margin: 0 auto; background: #111b21; padding: 36px 24px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
+        .card { max-width: 480px; margin: 0 auto; background: #111b21; padding: 36px 24px; border-radius: 16px; border: 1px solid #202c33; box-shadow: 0 4px 24px rgba(0,0,0,0.6); }
         h2 { color: #e9edef; font-size: 20px; margin-bottom: 12px; }
-        p { color: #8696a0; font-size: 15px; }
+        p { color: #8696a0; font-size: 14px; line-height: 1.6; }
+        .spinner { width: 36px; height: 36px; border: 4px solid #202c33; border-top-color: #00a884; border-radius: 50%; animation: spin 1s infinite linear; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .time-badge { display: inline-block; background: #202c33; padding: 6px 14px; border-radius: 20px; font-size: 13px; color: #aebac1; margin: 12px 0 20px; }
+        .actions { margin-top: 20px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        .btn { display: inline-block; padding: 8px 16px; border-radius: 8px; text-decoration: none; font-size: 13px; font-weight: 500; }
+        .btn-warning { background: #3b331d; color: #ffd166; border: 1px solid #5a4e2a; }
+        .btn-danger { background: #3b1d1d; color: #ff6b6b; border: 1px solid #5a2a2a; }
       </style>
     </head>
     <body>
       <div class="card">
-        <h2>⏳ جاري بدء عميل واتساب...</h2>
-        <p>يتم تحضير رمز QR، سيتم تحديث الصفحة تلقائياً خلال 5 ثوانٍ.</p>
+        <div class="spinner"></div>
+        <h2>⏳ جاري بدء عميل واتساب وتحضير المتصفح...</h2>
+        <p>يتم تجهيز جلسة واتساب وتحميل الصفحة لتوليد رمز الـ QR. سيتم تحديث الصفحة تلقائياً كل 5 ثوانٍ.</p>
+        <div class="time-badge">⏱️ وقت الانتظار الحالي: ${elapsedSeconds} ثانية</div>
+        ${lastClientError ? `<p style="color:#ef4444; font-size:12px;">آخر ملاحظة: ${lastClientError}</p>` : ''}
+        <div class="actions">
+          <a href="/qr?retry=1" class="btn btn-warning">⚡ إعادة تشغيل المتصفح فوراً</a>
+          <a href="/qr?reset=1" class="btn btn-danger" onclick="return confirm('هل تريد مسح ملفات الجلسة القديمة المعلقة والبدء بجلسة نظيفة؟')">🗑️ مسح الجلسة والبدء من الصفر</a>
+        </div>
       </div>
     </body>
     </html>
@@ -353,7 +407,14 @@ const client = new Client({
     dataPath: targetAuthDir
   }),
   authTimeoutMs: 60000,
+  qrMaxRetries: 0,
   qrMax: 0,
+  bypassCSP: true,
+  webVersionCache: {
+    type: 'remote',
+    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1047430678-alpha.html',
+    strict: false,
+  },
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -363,10 +424,9 @@ const client = new Client({
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
-      '--no-zygote',
-      '--single-process',
       '--disable-gpu',
-      '--memory-pressure-off'
+      '--disable-extensions',
+      '--disable-default-apps'
     ],
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   }
@@ -392,19 +452,62 @@ async function restartClient(reason) {
   isConnected = false;
   latestQR = null;
   botReadyTime = null;
+  lastClientError = reason;
+  clientInitStartTime = Date.now();
   resetQrWatchdog();
   try {
     await client.destroy();
   } catch (err) {
     console.error('تنبيه أثناء إغلاق العميل:', err.message);
   }
+  cleanupChromiumLocks(targetAuthDir);
   try {
     await client.initialize();
   } catch (err) {
     console.error('❌ فشل إعادة تشغيل عميل واتساب:', err.message);
+    lastClientError = err.message;
     setTimeout(() => {
       isInitializing = false;
       restartClient('retry_after_failure');
+    }, 5000);
+    return;
+  }
+  isInitializing = false;
+}
+
+async function resetSessionAndRestart() {
+  if (isInitializing) return;
+  isInitializing = true;
+  console.log('🔄 جاري مسح الجلسة وإعادة التهيئة من الصفر...');
+  isConnected = false;
+  latestQR = null;
+  botReadyTime = null;
+  lastClientError = null;
+  clientInitStartTime = Date.now();
+  try {
+    await client.destroy();
+  } catch (err) {
+    console.error('تنبيه أثناء إغلاق العميل:', err.message);
+  }
+  try {
+    const sessionDir = path.join(targetAuthDir, 'session');
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      console.log('🗑️ تم مسح مجلد جلسة واتساب القديم بالكامل.');
+    }
+  } catch (e) {
+    console.warn('تنبيه أثناء مسح مجلد الجلسة:', e.message);
+  }
+  cleanupChromiumLocks(targetAuthDir);
+  resetQrWatchdog();
+  try {
+    await client.initialize();
+  } catch (err) {
+    console.error('❌ فشل تشغيل عميل واتساب بعد مسح الجلسة:', err.message);
+    lastClientError = err.message;
+    setTimeout(() => {
+      isInitializing = false;
+      restartClient('retry_after_reset_failure');
     }, 5000);
     return;
   }
@@ -1309,6 +1412,7 @@ client.on('message', async (msg) => {
 });
 
 // Initialize WhatsApp client
+cleanupChromiumLocks(targetAuthDir);
 resetQrWatchdog();
 client.initialize().catch((err) => {
   console.error('❌ فشل تشغيل عميل واتساب:', err.message);

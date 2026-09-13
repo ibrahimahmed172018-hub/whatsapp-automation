@@ -8,7 +8,7 @@ ENV DATA_PATH=/data
 
 # Layer 1: OS Dependencies & Chromium (cached by Docker)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tzdata chromium python3 make g++ sqlite3 \
+    tzdata chromium fonts-liberation fonts-noto-color-emoji libgbm1 python3 make g++ sqlite3 \
     && ln -fs /usr/share/zoneinfo/Africa/Cairo /etc/localtime \
     && dpkg-reconfigure -f noninteractive tzdata \
     && mkdir -p /data \
