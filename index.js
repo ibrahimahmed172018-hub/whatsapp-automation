@@ -352,6 +352,8 @@ const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: targetAuthDir
   }),
+  authTimeoutMs: 60000,
+  qrMax: 0,
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
@@ -363,13 +365,54 @@ const client = new Client({
       '--no-first-run',
       '--no-zygote',
       '--single-process',
-      '--disable-blink-features=AutomationControlled'
+      '--disable-gpu',
+      '--memory-pressure-off'
     ],
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
   }
 });
 
+let isInitializing = false;
+let qrWatchdogTimer = null;
+
+function resetQrWatchdog() {
+  if (qrWatchdogTimer) clearTimeout(qrWatchdogTimer);
+  qrWatchdogTimer = setTimeout(async () => {
+    if (!isConnected && !latestQR) {
+      console.warn('⚠️ لم يتم توليد رمز QR أو الاتصال خلال 45 ثانية من التشغيل، جاري إعادة المحاولة بأمان...');
+      await restartClient('qr_timeout_45s');
+    }
+  }, 45000);
+}
+
+async function restartClient(reason) {
+  if (isInitializing) return;
+  isInitializing = true;
+  console.log(`🔄 إعادة تشغيل عميل واتساب تلقائياً بسبب: ${reason}`);
+  isConnected = false;
+  latestQR = null;
+  botReadyTime = null;
+  resetQrWatchdog();
+  try {
+    await client.destroy();
+  } catch (err) {
+    console.error('تنبيه أثناء إغلاق العميل:', err.message);
+  }
+  try {
+    await client.initialize();
+  } catch (err) {
+    console.error('❌ فشل إعادة تشغيل عميل واتساب:', err.message);
+    setTimeout(() => {
+      isInitializing = false;
+      restartClient('retry_after_failure');
+    }, 5000);
+    return;
+  }
+  isInitializing = false;
+}
+
 client.on('qr', async (qr) => {
+  if (qrWatchdogTimer) clearTimeout(qrWatchdogTimer);
   latestQR = qr;
   isConnected = false;
   console.log('\n======================================================');
@@ -385,6 +428,7 @@ client.on('qr', async (qr) => {
 });
 
 client.on('ready', () => {
+  if (qrWatchdogTimer) clearTimeout(qrWatchdogTimer);
   isConnected = true;
   latestQR = null;
   botReadyTime = Math.floor(Date.now() / 1000);
@@ -395,18 +439,21 @@ client.on('ready', () => {
 });
 
 client.on('authenticated', () => {
+  if (qrWatchdogTimer) clearTimeout(qrWatchdogTimer);
   console.log('🔐 تم توثيق جلسة واتساب بنجاح.');
 });
 
-client.on('auth_failure', (msg) => {
+client.on('auth_failure', async (msg) => {
   console.error('❌ فشل توثيق جلسة واتساب:', msg);
+  await restartClient('auth_failure');
 });
 
-client.on('disconnected', (reason) => {
+client.on('disconnected', async (reason) => {
   console.log('⚠️ انقطع الاتصال بواتساب:', reason);
   isConnected = false;
   latestQR = null;
   botReadyTime = null;
+  await restartClient(`disconnected (${reason})`);
 });
 
 // ─── Verbatim Constants & Copy ───────────────────────────────────────────────
@@ -1262,13 +1309,16 @@ client.on('message', async (msg) => {
 });
 
 // Initialize WhatsApp client
+resetQrWatchdog();
 client.initialize().catch((err) => {
   console.error('❌ فشل تشغيل عميل واتساب:', err.message);
+  restartClient('initialization_failure');
 });
 
 // Graceful Shutdown
 const shutdown = (signal) => {
   console.log(`\n🛑 تم استلام إشارة (${signal})، إغلاق السيرفر والاتصال...`);
+  if (qrWatchdogTimer) clearTimeout(qrWatchdogTimer);
   server.close(() => {
     console.log('✅ تم إغلاق سيرفر Express.');
   });
