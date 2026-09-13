@@ -157,7 +157,8 @@ function checkAuth(req, res, next) {
 
 app.post('/api/login', (req, res) => {
   const { pin } = req.body || {};
-  if (pin && String(pin).trim() === String(ADMIN_PIN).trim()) {
+  const currentPin = stmts.getSetting.get('admin_pin')?.value || ADMIN_PIN;
+  if (pin && String(pin).trim() === String(currentPin).trim()) {
     return res.json({ success: true, token: 'admin-authorized' });
   }
   return res.status(401).json({ success: false, error: 'رمز PIN غير صحيح' });
@@ -321,6 +322,19 @@ app.post('/api/settings/group', checkAuth, (req, res) => {
     if (!groupId) return res.status(400).json({ error: 'معرف الجروب مطلوب' });
     stmts.setSetting.run('drivers_group_id', groupId.trim());
     res.json({ success: true, message: 'تم حفظ معرف جروب المناديب بنجاح' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings/pin', checkAuth, (req, res) => {
+  try {
+    const { pin } = req.body || {};
+    if (!pin || String(pin).trim().length < 4) {
+      return res.status(400).json({ error: 'يجب ألا يقل رمز PIN عن 4 خانات' });
+    }
+    stmts.setSetting.run('admin_pin', String(pin).trim());
+    res.json({ success: true, message: 'تم حفظ وتحديث رمز الدخول PIN الجديد بنجاح!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -948,6 +962,17 @@ client.on('message', async (msg) => {
 ✅ طلبات تم تسليمها بنجاح: ${stmts.countCompleted.get().total}
 ❌ طلبات ملغاة: ${stmts.countCancelled.get().total}`;
         return msg.reply(statsMsg);
+      }
+
+      // 7. /set_pin <new_pin>
+      if (lower.startsWith('/set_pin') || lower.startsWith('/pin')) {
+        const parts = lower.split(/\s+/);
+        if (parts.length < 2 || parts[1].length < 4) {
+          return msg.reply('⚠️ الاستخدام: /set_pin <الرمز_الجديد>\n(مثال: /set_pin 5678 - 4 خانات على الأقل)');
+        }
+        const newPin = parts[1].trim();
+        stmts.setSetting.run('admin_pin', newPin);
+        return msg.reply(`✅ تم تغيير رمز PIN للوحة التحكم بنجاح إلى: *${newPin}*`);
       }
     }
 

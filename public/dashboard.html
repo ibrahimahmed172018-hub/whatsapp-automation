@@ -249,7 +249,7 @@
 
     <!-- تبويب 3: الإعدادات -->
     <div id="settings-tab" class="tab-content" style="display: none;">
-      <div class="card">
+      <div class="card" style="margin-bottom: 20px;">
         <div class="card-title" style="margin-bottom: 16px;">⚙️ إعدادات جروب المناديب والإشعارات</div>
         <div style="max-width: 500px;">
           <div class="form-group">
@@ -258,6 +258,18 @@
             <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">يمكنك تعيينه أيضاً من داخل الواتساب بكتابة /set_group داخل الجروب.</p>
           </div>
           <button class="btn btn-primary" onclick="saveGroupSetting()">حفظ معرف الجروب ✅</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" style="margin-bottom: 16px;">🔒 أمان لوحة التحكم وتغيير رمز الدخول (PIN)</div>
+        <div style="max-width: 500px;">
+          <div class="form-group">
+            <label>رمز الدخول الجديد (PIN):</label>
+            <input type="password" id="setting-new-pin" class="form-control" placeholder="أدخل 4 أرقام أو أكثر" minlength="4">
+            <p style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">الرمز الافتراضي الحالي هو 1234 أو المحدد في متغيرات البيئة.</p>
+          </div>
+          <button class="btn btn-primary" onclick="savePinSetting()">تغيير وحفظ رمز PIN 🔐</button>
         </div>
       </div>
     </div>
@@ -583,6 +595,33 @@
         }
       } catch (err) {
         alert('خطأ: ' + err.message);
+      }
+    }
+
+    async function savePinSetting() {
+      const pin = document.getElementById('setting-new-pin').value.trim();
+      if (!pin || pin.length < 4) {
+        alert('⚠️ يرجى إدخال رمز PIN لا يقل عن 4 أرقام أو خانات.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/settings/pin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token
+          },
+          body: JSON.stringify({ pin })
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert('✅ ' + data.message);
+          document.getElementById('setting-new-pin').value = '';
+        } else {
+          alert('❌ ' + (data.error || 'تعذر حفظ الرمز'));
+        }
+      } catch (err) {
+        alert('❌ خطأ في الاتصال: ' + err.message);
       }
     }
 
